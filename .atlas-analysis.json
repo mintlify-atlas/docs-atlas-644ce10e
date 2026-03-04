@@ -1,0 +1,154 @@
+{
+  "projectType": "framework",
+  "projectName": "Piggo Games",
+  "projectDescription": "A multiplayer browser game framework with ECS architecture, rollback netcode, and 2D/3D rendering",
+  "theme": "almond",
+  "primaryColor": "#FF6B9D",
+  "lightColor": "#FFB6D9",
+  "darkColor": "#D63384",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/ecs",
+              "concepts/world",
+              "concepts/games",
+              "concepts/rendering",
+              "concepts/netcode",
+              "concepts/physics"
+            ]
+          },
+          {
+            "group": "Building Games",
+            "pages": [
+              "building/creating-games",
+              "building/components",
+              "building/systems",
+              "building/entities",
+              "building/actions",
+              "building/ui"
+            ]
+          },
+          {
+            "group": "Built-in Games",
+            "pages": [
+              "games/overview",
+              "games/lobby",
+              "games/volley",
+              "games/strike",
+              "games/craft",
+              "games/build",
+              "games/island",
+              "games/mars",
+              "games/hoops",
+              "games/legends",
+              "games/jam"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/server-setup",
+              "deployment/database",
+              "deployment/production"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core API",
+            "pages": [
+              "api/world",
+              "api/game",
+              "api/default-world"
+            ]
+          },
+          {
+            "group": "ECS",
+            "pages": [
+              "api/ecs/components",
+              "api/ecs/systems",
+              "api/ecs/entities",
+              "api/ecs/actions"
+            ]
+          },
+          {
+            "group": "Graphics",
+            "pages": [
+              "api/graphics/three-renderer",
+              "api/graphics/pixi-renderer",
+              "api/graphics/cameras",
+              "api/graphics/shaders"
+            ]
+          },
+          {
+            "group": "Networking",
+            "pages": [
+              "api/networking/client",
+              "api/networking/delay-syncer",
+              "api/networking/rollback-syncer",
+              "api/networking/server"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/utilities/math",
+              "api/utilities/blocks",
+              "api/utilities/color",
+              "api/utilities/sound"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Entity Component System (ECS) architecture",
+    "Rollback and delay-based netcode for smooth multiplayer",
+    "Dual rendering support (Three.js for 3D, Pixi.js for 2D)",
+    "Physics engines (Rapier 2D and 3D)",
+    "Game builder system for creating new game modes",
+    "Websocket-based multiplayer server with Prisma database",
+    "Built-in UI components and HTML overlays",
+    "10+ playable game modes included",
+    "TypeScript-first with strict typing",
+    "Monorepo structure with Bun workspaces"
+  ],
+  "publicApiSurface": [
+    "World - Core runtime managing tick loop, entities, and systems",
+    "DefaultWorld - Pre-configured world with base systems",
+    "Game & GameBuilder - Game mode definition and initialization",
+    "Component - ECS component definitions",
+    "System & SystemBuilder - ECS system definitions",
+    "Entity - Game object with components",
+    "ThreeRenderer - 3D rendering engine",
+    "PixiRenderer - 2D rendering engine",
+    "Client - Multiplayer client connection",
+    "DelaySyncer - Delay-based netcode",
+    "RollbackSyncer - Rollback netcode for competitive games",
+    "NetClientSystem - Client-side networking",
+    "NetServerSystem - Server-side networking",
+    "BlockData & BlockMesh - Voxel/block system",
+    "Actions - Player and NPC actions",
+    "Commands - Debug and game commands",
+    "Random - Deterministic random number generator",
+    "Physics engines (Rapier 2D/3D integration)"
+  ]
+}
