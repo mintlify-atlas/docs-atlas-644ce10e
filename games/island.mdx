@@ -1,0 +1,733 @@
+---
+title: 'Island'
+description: 'Dice-based adventure game with turn-based combat and abilities'
+---
+
+Island is a turn-based dice adventure game where players roll dice, use abilities, and battle a monster in a beach-themed setting.
+
+## Gameplay
+
+- **Mode**: Turn-based dice game
+- **Players vs Monster**: Players take turns, then monster attacks
+- **Dice Rolling**: Roll 2d6 for abilities
+- **Critical Hits**: Rolling 6-1 triggers special effects
+- **Instant Loss**: Rolling 7 (1+6 or 6+1 in specific combination) deals damage
+- **Abilities**: Each player has special abilities triggered by dice rolls
+- **Rounds**: Multiple rounds with victory conditions
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/island/Island.mdx:43`
+
+```typescript
+export const Island: GameBuilder<IslandState, IslandSettings> = {
+  id: "island",
+  init: (world) => ({
+    id: "island",
+    netcode: "rollback",
+    renderer: "pixi",
+    settings: {
+      showControls: true
+    },
+    state: {
+      round: 1,
+      turnPhase: "players",
+      turnIndex: 0,
+      turnTarget: null,
+      rollId: 0,
+      handledRollId: 0,
+      rollQueued: false,
+      autoRollAt: null,
+      advanceAt: null,
+      shooter: null,
+      die1: null,
+      die2: null,
+      rolled: null,
+      selectedAbility: null
+    },
+    systems: [
+      PhysicsSystem("local"),
+      PhysicsSystem("global"),
+      SpawnSystem({ spawner: Ian, pos: { x: 0, y: 0, z: 0 } }),
+      IslandSystem,
+      PixiRenderSystem,
+      HUDSystem(controls),
+      PixiCameraSystem({
+        follow: () => ({ x: 0, y: -10, z: 0 }),
+        resize: () => {
+          const { w } = screenWH()
+          return min(3.4, w / (beach.width * 1.2))
+        }
+      }),
+      PixiDebugSystem,
+      InventorySystem,
+      ItemSystem,
+      ShadowSystem,
+      HeartSystem(),
+      PixiNametagSystem()
+    ],
+    entities: [
+      Background({ rays: true }),
+      BeachWall(beach),
+      OuterBeachWall(beach),
+      Beach(beach),
+      Flag(),
+      Patrick(),  // Monster enemy
+      Water2D(),
+      Dice(1),
+      Dice(2),
+      NumBoard(),
+      RallyScroll(),
+      SliceScroll(),
+      Cursor(),
+      EscapeMenu(world),
+      HtmlChat(),
+      HtmlLagText(),
+      HtmlFpsText(),
+      HtmlJoystickEntity("left", "move")
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type D6 = 1 | 2 | 3 | 4 | 5 | 6
+export type Roll = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 67
+
+export type IslandState = {
+  round: number                  // Current round number
+  turnPhase: "players" | "monster"  // Whose turn it is
+  turnIndex: number              // Which player's turn (0-based)
+  turnTarget: Roll | null        // Target number for turn
+  rollId: number                 // Unique ID for each roll
+  handledRollId: number          // Last processed roll
+  rollQueued: boolean            // Roll scheduled
+  autoRollAt: number | null      // Tick to auto-roll
+  advanceAt: number | null       // Tick to advance turn
+  shooter: string | null         // Current roller ID
+  die1: D6 | null               // First die result
+  die2: D6 | null               // Second die result
+  rolled: Roll | null            // Combined result
+  selectedAbility: string | null // Chosen ability
+}
+```
+
+### Settings
+
+```typescript
+export type IslandSettings = {
+  showControls: boolean
+}
+```
+
+## Systems
+
+### IslandSystem
+
+Location: `core/src/games/island/Island.ts:117`
+
+```typescript
+const IslandSystem = SystemBuilder({
+  id: "IslandSystem",
+  init: (world) => {
+    const mobileUI = MobileUI(world)
+    const monsterId = "patrick"
+    const monsterPointingDelta = { x: -140, y: 0 }
+
+    const queueDiceRoll = (shooterId: string, pointingDelta: { x: number, y: number }, delay = 1) => {
+      const shooter = world.entity(shooterId)
+      world.actions.push(world.tick + delay, "dice-1", { actionId: "roll", params: { shooterId, pointingDelta } })
+      world.actions.push(world.tick + delay, "dice-2", { actionId: "roll", params: { shooterId, pointingDelta } })
+      shooter?.components.renderable?.setAnimation("spike")
+    }
+
+    const beginTurn = (state: IslandState, actorId: string | null) => {
+      state.shooter = actorId
+      state.turnTarget = null
+      state.autoRollAt = null
+      state.rollQueued = false
+    }
+
+    const beginPlayerTurn = (state: IslandState, characters: { id: string }[]) => {
+      state.turnPhase = "players"
+      if (characters.length === 0) {
+        beginTurn(state, null)
+        return
+      }
+
+      if (state.turnIndex >= characters.length) {
+        state.turnIndex = 0
+      }
+
+      beginTurn(state, characters[state.turnIndex]?.id ?? null)
+    }
+
+    const beginMonsterTurn = (state: IslandState) => {
+      state.turnPhase = "monster"
+      state.turnIndex = 0
+      beginTurn(state, monsterId)
+      state.autoRollAt = world.tick + 20  // Auto-roll after delay
+    }
+
+    const advanceTurn = (state: IslandState, characters: { id: string }[]) => {
+      state.rolled = null
+      state.die1 = null
+      state.die2 = null
+      state.turnTarget = null
+      state.selectedAbility = null
+
+      if (state.turnPhase === "monster") {
+        state.round += 1
+        state.turnPhase = "players"
+        state.turnIndex = 0
+        beginPlayerTurn(state, characters)
+        return
+      }
+
+      state.turnIndex += 1
+
+      if (state.turnIndex >= characters.length) {
+        beginMonsterTurn(state)
+        return
+      }
+
+      beginPlayerTurn(state, characters)
+    }
+
+    const maybeAutoRoll = (state: IslandState) => {
+      if (state.autoRollAt === null || world.tick < state.autoRollAt) return
+
+      const shooterId = state.shooter
+      state.autoRollAt = null
+
+      if (!shooterId) return
+
+      if (state.turnPhase === "monster") {
+        queueDiceRoll(shooterId, monsterPointingDelta, 0)
+        state.rollQueued = true
+        return
+      }
+
+      if (state.turnPhase === "players" && state.selectedAbility) {
+        const pointingDelta = { x: randomInt(100) + 100, y: 0 }
+        queueDiceRoll(shooterId, pointingDelta)
+        state.rollQueued = true
+      }
+    }
+
+    const triggerAbility = (payload: { state: IslandState, shooterId: string, abilityId: string, roll: Roll }) => {
+      console.log("ABILITY", payload.abilityId, payload.roll)
+    }
+
+    const triggerCrit = (_: { state: IslandState, shooterId: string, die1: D6, die2: D6 }) => {
+      console.log("CRIT")
+    }
+
+    return {
+      id: "IslandSystem",
+      query: [],
+      priority: 6,
+      onTick: () => {
+        mobileUI?.update()
+        const state = world.state<IslandState>()
+        const characters = world.characters()
+
+        // Advance turn at scheduled tick
+        if (state.advanceAt !== null && world.tick >= state.advanceAt) {
+          state.advanceAt = null
+          advanceTurn(state, characters)
+          return
+        }
+
+        // Initialize turn if no shooter
+        if (state.shooter === null) {
+          beginPlayerTurn(state, characters)
+        } else if (state.turnPhase === "players") {
+          const expected = characters[state.turnIndex]?.id ?? null
+          if (state.shooter !== expected) {
+            beginPlayerTurn(state, characters)
+          }
+        } else if (state.turnPhase === "monster" && state.shooter !== monsterId) {
+          beginMonsterTurn(state)
+        }
+
+        // Auto-roll when ability selected
+        if (state.turnPhase === "players"
+          && state.shooter
+          && state.selectedAbility
+          && state.autoRollAt === null
+          && !state.rollQueued
+          && state.die1 === null
+          && state.die2 === null
+          && state.rolled === null
+        ) {
+          state.autoRollAt = world.tick
+        }
+
+        maybeAutoRoll(state)
+
+        // Calculate result when both dice settled
+        if (state.die1 && state.die2 && state.rolled === null) {
+          let result = state.die1 + state.die2
+          
+          // Check for 6-1 or 1-6 critical
+          if ((state.die1 === 6 && state.die2 === 1) || (state.die1 === 1 && state.die2 === 6)) {
+            result = 67  // Special crit value
+          }
+
+          state.rolled = result as Roll
+          state.rollId += 1
+
+          // Damage on roll of 7
+          if (state.rolled === 7 && state.shooter) {
+            const character = world.entity(state.shooter)
+            // Apply damage overlay
+          }
+        }
+
+        // Clear result if dice change
+        if (state.die1 === null || state.die2 === null) {
+          state.rolled = null
+        }
+
+        // Handle new roll result
+        if (state.rolled !== null && state.rollId !== state.handledRollId) {
+          state.handledRollId = state.rollId
+
+          // Critical hit (6-1 or 1-6)
+          if (state.rolled === 67 && state.shooter && state.die1 && state.die2) {
+            triggerCrit({ state, shooterId: state.shooter, die1: state.die1, die2: state.die2 })
+            world.client?.sound.play({ name: "jingle1" })
+            state.advanceAt = world.tick + 40
+            return
+          }
+
+          // Roll of 7 (instant damage)
+          if (state.rolled === 7) {
+            world.client?.sound.play({ name: "spike" })
+            state.advanceAt = world.tick + 40
+            return
+          }
+
+          // Normal ability trigger
+          if (state.turnPhase === "players" && state.shooter && state.selectedAbility) {
+            world.client?.sound.play({ name: "jingle1" })
+            triggerAbility({
+              state,
+              shooterId: state.shooter,
+              abilityId: state.selectedAbility,
+              roll: state.rolled
+            })
+          }
+
+          state.advanceAt = world.tick + 40
+          return
+        }
+      }
+    }
+  }
+})
+```
+
+## Entities
+
+### Ian (Player Character)
+
+Location: `core/src/games/island/Ian.ts`
+
+Player character with movement:
+
+```typescript
+export const Ian = (player: Player) => Character({
+  id: `ian-${player.id}`,
+  components: {
+    position: Position({
+      x: 0, y: 0, z: 0,
+      speed: 100,
+      gravity: 0.3,
+      velocityResets: 1
+    }),
+    networked: Networked(),
+    collider: Collider({ shape: "ball", radius: 4, group: "notme1" }),
+    team: Team(player.components.team.data.team),
+    input: Input({
+      // WASD movement
+      // Ability selection
+    }),
+    actions: Actions({
+      move: Move,
+      selectAbility: Action("selectAbility", ({ params, world }) => {
+        const state = world.state<IslandState>()
+        state.selectedAbility = params.abilityId
+      })
+    }),
+    shadow: Shadow(5),
+    renderable: Renderable({
+      // Character sprite
+    })
+  }
+})
+```
+
+### Dice Entities
+
+Location: `core/src/games/island/Dice.ts`
+
+Physical dice that roll:
+
+```typescript
+export const Dice = (diceNum: 1 | 2): Entity => Entity({
+  id: `dice-${diceNum}`,
+  components: {
+    position: Position({
+      x: 0, y: 0, z: 10,
+      gravity: 0.3,
+      velocityResets: 0
+    }),
+    collider: Collider({ shape: "ball", radius: 3, group: "2" }),
+    networked: Networked(),
+    actions: Actions({
+      roll: Action("roll", ({ entity, params, world }) => {
+        const { position } = entity.components
+        const state = world.state<IslandState>()
+        
+        // Launch dice
+        const dx = params.pointingDelta.x
+        const dy = params.pointingDelta.y
+        const magnitude = hypot(dx, dy)
+        
+        position.setVelocity({
+          x: (dx / magnitude) * 200,
+          y: (dy / magnitude) * 200,
+          z: 150 + world.random.next() * 50
+        })
+        
+        // Determine result
+        const result = (1 + world.random.int(6)) as D6
+        
+        // Store in state when dice lands
+        if (diceNum === 1) state.die1 = result
+        else state.die2 = result
+      })
+    }),
+    renderable: Renderable({
+      // Dice sprite with numbers
+    })
+  }
+})
+```
+
+### Patrick (Monster)
+
+Location: `core/src/games/island/enemies/Patrick.ts`
+
+Enemy boss character:
+
+```typescript
+export const Patrick = (): Entity => Entity({
+  id: "patrick",
+  components: {
+    position: Position({
+      x: -140, y: 0, z: 0,
+      speed: 0
+    }),
+    health: Health({ max: 100 }),
+    renderable: Renderable({
+      // Monster sprite
+      scale: 2.0
+    })
+  }
+})
+```
+
+### Beach Terrain
+
+Location: `core/src/games/island/terrain/Beach.ts`
+
+- `Beach` - Sandy playing surface
+- `BeachWall` - Inner boundary
+- `OuterBeachWall` - Outer boundary
+- `Flag` - Visual landmark
+- `Pier` - Structure element
+- `Treasure` - Collectible
+
+### UI Entities
+
+#### NumBoard
+
+Location: `core/src/games/island/ui/NumBoard.ts`
+
+Displays rolled number and turn info.
+
+#### HeartSystem
+
+Location: `core/src/games/island/ui/HeartSystem.ts`
+
+Health display for players:
+
+```typescript
+export const HeartSystem = () => SystemBuilder({
+  id: "HeartSystem",
+  init: () => ({
+    id: "HeartSystem",
+    query: ["health"],
+    onTick: (entities) => {
+      // Update heart sprites based on health
+    }
+  })
+})
+```
+
+#### Scroll Entities
+
+Location: `core/src/games/island/ui/Scroll.ts`
+
+- `RallyScroll` - Rally ability UI
+- `SliceScroll` - Slice ability UI
+
+## Dice Mechanics
+
+### Rolling
+
+Location: `core/src/games/island/Island.ts:125`
+
+```typescript
+const queueDiceRoll = (shooterId: string, pointingDelta: { x: number, y: number }, delay = 1) => {
+  const shooter = world.entity(shooterId)
+  
+  // Queue both dice to roll
+  world.actions.push(world.tick + delay, "dice-1", { 
+    actionId: "roll", 
+    params: { shooterId, pointingDelta } 
+  })
+  world.actions.push(world.tick + delay, "dice-2", { 
+    actionId: "roll", 
+    params: { shooterId, pointingDelta } 
+  })
+  
+  // Play animation
+  shooter?.components.renderable?.setAnimation("spike")
+}
+```
+
+### Result Calculation
+
+Location: `core/src/games/island/Island.ts:256`
+
+```typescript
+if (state.die1 && state.die2 && state.rolled === null) {
+  let result = state.die1 + state.die2
+  
+  // Check for critical (6-1 or 1-6)
+  if ((state.die1 === 6 && state.die2 === 1) || (state.die1 === 1 && state.die2 === 6)) {
+    result = 67  // Special value
+  }
+
+  state.rolled = result as Roll
+  state.rollId += 1
+}
+```
+
+### Special Results
+
+**Critical (67)**: 6-1 or 1-6 combination
+- Triggers special effects
+- Plays jingle sound
+- Extra damage or benefit
+
+**Seven (7)**: Sum of 7
+- Instant damage to roller
+- Plays spike sound
+- Turn ends immediately
+
+**Other (2-12)**: Normal ability rolls
+- Triggers selected ability
+- Effect based on roll value
+- Higher = better
+
+## Turn System
+
+### Player Turns
+
+Location: `core/src/games/island/Island.ts:138`
+
+```typescript
+const beginPlayerTurn = (state: IslandState, characters: { id: string }[]) => {
+  state.turnPhase = "players"
+  
+  if (state.turnIndex >= characters.length) {
+    state.turnIndex = 0
+  }
+
+  beginTurn(state, characters[state.turnIndex]?.id ?? null)
+}
+```
+
+Players take turns in order:
+1. Select ability
+2. Auto-roll dice
+3. Apply result
+4. Next player
+
+### Monster Turn
+
+Location: `core/src/games/island/Island.ts:155`
+
+```typescript
+const beginMonsterTurn = (state: IslandState) => {
+  state.turnPhase = "monster"
+  state.turnIndex = 0
+  beginTurn(state, monsterId)
+  state.autoRollAt = world.tick + 20  // Auto-roll after 20 ticks
+}
+```
+
+Monster's turn:
+- Automatically rolls
+- Attacks players
+- No ability selection
+- Shorter delay
+
+### Turn Advancement
+
+Location: `core/src/games/island/Island.ts:162`
+
+```typescript
+const advanceTurn = (state: IslandState, characters: { id: string }[]) => {
+  // Clear turn state
+  state.rolled = null
+  state.die1 = null
+  state.die2 = null
+  state.turnTarget = null
+  state.selectedAbility = null
+
+  // Monster turn -> new round
+  if (state.turnPhase === "monster") {
+    state.round += 1
+    state.turnPhase = "players"
+    state.turnIndex = 0
+    beginPlayerTurn(state, characters)
+    return
+  }
+
+  state.turnIndex += 1
+
+  // All players done -> monster turn
+  if (state.turnIndex >= characters.length) {
+    beginMonsterTurn(state)
+    return
+  }
+
+  beginPlayerTurn(state, characters)
+}
+```
+
+## Abilities
+
+Location: `core/src/games/island/Island.ts:207`
+
+```typescript
+const triggerAbility = (payload: { 
+  state: IslandState, 
+  shooterId: string, 
+  abilityId: string, 
+  roll: Roll 
+}) => {
+  // Apply ability effect based on:
+  // - abilityId (which ability)
+  // - roll (how effective)
+  // - shooterId (who cast it)
+}
+```
+
+Abilities are triggered when:
+- Player's turn
+- Ability selected
+- Dice rolled
+- Result calculated
+
+## Controls
+
+Location: `core/src/games/island/Island.ts:313`
+
+```typescript
+const controls: HUDSystemProps = {
+  direction: "row",
+  from: { top: 26, left: 26 },
+  clusters: [
+    {
+      label: "menu",
+      buttons: [["esc"]]
+    },
+    {
+      label: "move",
+      buttons: [["A", "S", "D"], ["W"]]
+    }
+  ]
+}
+```
+
+## Mobile Support
+
+Location: Entities array
+
+```typescript
+HtmlJoystickEntity("left", "move")
+```
+
+Touch joystick for movement.
+
+## Key Features
+
+### Turn-Based Gameplay
+
+- Clear turn order
+- Player -> Player -> Monster
+- Auto-advance after roll
+- Visual turn indicator
+
+### Dice Physics
+
+- Physical dice entities
+- Velocity-based rolling
+- Random results
+- Landing animation
+
+### Ability System
+
+- Multiple abilities per player
+- Roll-based power
+- Strategic choices
+- Cooldowns possible
+
+### Beach Theme
+
+- Tropical setting
+- Water borders
+- Sand terrain
+- Island aesthetics
+
+## Related Files
+
+- `Ian.ts` - Player character
+- `Dice.ts` - Rolling dice
+- `Patrick.ts` - Monster enemy
+- `Beach.ts` - Terrain
+- `NumBoard.ts` - UI display
+- `HeartSystem.ts` - Health UI
+- `Scroll.ts` - Ability UI
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Mars" href="/games/mars">
+    Another single-player focused game
+  </Card>
+  <Card title="Jam" href="/games/jam">
+    Rhythm-based gameplay
+  </Card>
+</CardGroup>

@@ -1,0 +1,563 @@
+---
+title: 'Strike'
+description: 'Tactical team-based FPS with voxel maps and rollback netcode'
+---
+
+Strike is a competitive first-person shooter featuring team-based gameplay, voxel maps, and rollback netcode for low-latency combat.
+
+## Gameplay
+
+- **Teams**: 5v5 (Attackers vs Defenders)
+- **Perspective**: First-person with Three.js rendering
+- **Maps**: Retake-style voxel maps
+- **Weapons**: Inventory system with different guns
+- **Rounds**: Warmup, round start, play, end phases
+- **KDA**: Kill/Death/Assist tracking
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/strike/Strike.ts:28`
+
+```typescript
+export const Strike: GameBuilder<StrikeState, StrikeSettings> = {
+  id: "strike",
+  init: (world) => ({
+    id: "strike",
+    netcode: "rollback",
+    renderer: "three",
+    settings: {
+      ambientSound: true,
+      showControls: true,
+      showCrosshair: true,
+      showNametags: true,
+      mouseSensitivity: 1
+    },
+    state: {
+      jumped: [],
+      phase: "warmup",
+      phaseChange: null,
+      round: null
+    },
+    systems: [
+      SpawnSystem({ spawner: Sarge, pos: { x: 8, y: 8, z: 2 } }),
+      BlockPhysicsSystem("global"),
+      BlockPhysicsSystem("local"),
+      ThreeCameraSystem({ height: 0.5, distance: 0.8 }),
+      StrikeSystem,
+      ThreeNametagSystem,
+      ThreeSystem,
+      InventorySystem,
+      BlockMeshSystem({ counts: { marble: 10000, grass: 0, leaf: 0, oak: 0, spruce: 0 }}),
+      HUDSystem(controls)
+    ],
+    entities: [
+      Crosshair(),
+      Hitmarker(),
+      Scoreboard(),
+      EscapeMenu(world),
+      HtmlChat(),
+      HtmlFeed(),
+      HealthAmmo(),
+      Sun({ bounds: { left: -10, right: 12, top: 0, bottom: -9 }}),
+      Sky(),
+      DummyPlayer(),
+      DummyPlayer2(),
+      PhaseBanner(),
+      HtmlLagText(),
+      HtmlFpsText()
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type StrikeState = {
+  jumped: string[]        // Characters currently in air
+  phase: "warmup" | "round-start" | "round-play" | "round-end" | "game-end"
+  phaseChange: number | null  // Tick when phase changes
+  round: number | null        // Current round number
+}
+```
+
+### Settings
+
+```typescript
+export type StrikeSettings = {
+  showControls: boolean
+  showCrosshair: boolean
+  showNametags: boolean
+  mouseSensitivity: number
+}
+```
+
+## Systems
+
+### StrikeSystem
+
+Location: `core/src/games/strike/Strike.ts:82`
+
+```typescript
+const StrikeSystem = SystemBuilder({
+  id: "StrikeSystem",
+  init: (world) => {
+    // Load voxel map
+    world.blocks.loadMap(RetakeMap)
+    world.blocks.coloring = RetakeMapColoring
+
+    const mobileUI = MobileUI(world)
+
+    // Set initial camera aim
+    if (world.client) world.client.controls.localAim.x = 0
+
+    return {
+      id: "StrikeSystem",
+      query: [],
+      priority: 3,
+      onTick: () => {
+        const state = world.state<StrikeState>()
+        const settings = world.settings<StrikeSettings>()
+
+        // Menu control (desktop only)
+        if (world.client && !world.client.mobile) {
+          world.client.menu = document.pointerLockElement === null
+        }
+
+        mobileUI?.update()
+
+        const players = world.players()
+
+        // Warmup phase logic
+        if (world.mode === "server" && state.phase === "warmup") {
+          const pcs = players.filter(p => !p.id.includes("dummy"))
+          const ready = players.filter(p => p.components.pc.data.ready)
+
+          // Start when all players ready
+          if (ready.length && ready.length === pcs.length) {
+            state.phaseChange = world.tick + 120
+          }
+        }
+
+        // Phase transitions
+        if (state.phaseChange && world.tick >= state.phaseChange) {
+          if (state.phase === "warmup") {
+            state.phase = "round-start"
+
+            // Spawn players at team positions
+            let i = 0, j = 0
+            for (const player of players) {
+              const character = player.components.controlling?.getCharacter(world)
+              if (!character) continue
+
+              const { position, health } = character.components
+              const teamNumber = player.components.team.data.team
+              const randomPoint = spawnPoints[teamNumber][teamNumber === 1 ? i++ : j++]
+
+              position.setPosition(randomPoint)
+              position.data.aim.x = randomPoint.r
+
+              if (health) health.setKDA({ k: 0, d: 0, a: 0 })
+
+              if (world.client?.playerId() === player.id) {
+                world.client.controls.localAim.x = randomPoint.r
+              }
+            }
+          }
+          state.phaseChange = null
+        }
+
+        // Jump state cleanup
+        for (const player of players) {
+          const character = player.components.controlling?.getCharacter(world)
+          if (!character) continue
+
+          const { position, health } = character.components
+          if (!health) continue
+          const { standing, velocity } = position.data
+
+          if (standing && velocity.z <= 0) {
+            state.jumped = state.jumped.filter(id => id !== character.id)
+          }
+
+          // KDA tracking on death
+          if (health?.dead() && health.data.died === world.tick - 10) {
+            const { k, d, a } = health.getKDA()
+            health.setKDA({ k, d: d + 1, a })
+
+            // Award kill to attacker
+            const fromPlayer = world.entity(health.data.diedFrom || "")
+            const fromCharacter = fromPlayer?.components.controlling?.getCharacter(world)
+            if (fromCharacter?.components.health) {
+              const kda = fromCharacter.components.health.getKDA()
+              fromCharacter.components.health.setKDA({ 
+                k: kda.k + 1, d: kda.d, a: kda.a 
+              })
+            }
+          }
+
+          // Reset rotation
+          position.data.rotating = 0
+          if (rotation < 0) position.data.rotating = min(0.08, -rotation)
+          if (rotation > 0) position.data.rotating = -1 * min(0.08, rotation)
+
+          // Respawn if fell off map
+          if (z < -4) {
+            position.setPosition({ x: 9.9, y: 15, z: 2 })
+          }
+        }
+      }
+    }
+  }
+})
+```
+
+### BlockPhysicsSystem
+
+Location: `core/src/games/strike/Strike.ts:49-50`
+
+Two instances for voxel collision:
+- `BlockPhysicsSystem("global")` - Networked physics
+- `BlockPhysicsSystem("local")` - Client prediction
+
+### InventorySystem
+
+Location: `core/src/games/strike/Strike.ts:56`
+
+Manages weapons and items.
+
+### BlockMeshSystem
+
+Location: `core/src/games/strike/Strike.ts:56`
+
+Renders voxel chunks:
+
+```typescript
+BlockMeshSystem({ 
+  counts: { 
+    marble: 10000,  // Marble blocks for map
+    grass: 0, 
+    leaf: 0, 
+    oak: 0, 
+    spruce: 0 
+  }
+})
+```
+
+## Entities
+
+### Sarge (Player Character)
+
+Location: `core/src/games/strike/Sarge.ts`
+
+First-person shooter character with inventory:
+
+```typescript
+export const Sarge = (player: Player): Character => {
+  return Character({
+    id: `sarge-${player.id}`,
+    components: {
+      position: Position({
+        x: 8, y: 8, z: 2,
+        friction: true,
+        gravity: 0.003,
+        aim: { x: 0, y: 0 }
+      }),
+      networked: Networked(),
+      inventory: Inventory([RifleItem, PistolItem, KnifeItem]),
+      collider: Collider({ shape: "ball", radius: 0.1 }),
+      health: Health(),
+      input: Input({
+        // WASD movement
+        // Mouse aim
+        // Weapon switching (1, 2, 3)
+        // Reload (R)
+        // Shoot (MB1)
+      }),
+      actions: Actions({
+        move: moveBlockCharacter,
+        reload: reloadWeapon,
+        shoot: shootWeapon,
+        jump: jumpAction
+      }),
+      three: Three({
+        // 3D character model
+        // First/third person camera
+        // Weapon rendering
+      })
+    }
+  })
+}
+```
+
+### Maps
+
+#### RetakeMap
+
+Location: `core/src/games/strike/RetakeMap.ts`
+
+Voxel-based map data:
+
+```typescript
+export const RetakeMap: XYZ[] = [
+  // Array of block positions
+  { x: 0, y: 0, z: 0 },
+  { x: 1, y: 0, z: 0 },
+  // ...
+]
+
+export const RetakeMapColoring: Record<string, BlockColor> = {
+  "0,0,0": "gray",
+  "1,0,0": "red",
+  // ...
+}
+```
+
+#### TempleMap
+
+Location: `core/src/games/strike/TempleMap.ts`
+
+Alternative map layout.
+
+### UI Entities
+
+#### Scoreboard
+
+Location: `core/src/games/strike/Scoreboard.ts`
+
+Displays team scores and KDA:
+
+```typescript
+export const Scoreboard = (): Entity => Entity({
+  id: "scoreboard",
+  components: {
+    html: HtmlScoreboard({
+      // Team 1 players
+      // Team 2 players
+      // K/D/A stats
+    })
+  }
+})
+```
+
+#### HealthAmmo
+
+Location: `core/src/games/strike/HealthAmmo.ts`
+
+HUD display for health and ammo:
+
+```typescript
+export const HealthAmmo = (): Entity => Entity({
+  id: "health-ammo",
+  components: {
+    html: HtmlDiv({
+      // Health bar
+      // Ammo counter
+      // Weapon icon
+    })
+  }
+})
+```
+
+#### PhaseBanner
+
+Location: `core/src/games/strike/PhaseBanner.ts`
+
+Shows round start messages:
+
+```typescript
+export const PhaseBanner = (): Entity => Entity({
+  id: "phase-banner",
+  components: {
+    html: HtmlText({
+      text: "ROUND START",
+      style: {
+        fontSize: "48px",
+        color: "white",
+        textAlign: "center"
+      }
+    })
+  }
+})
+```
+
+## Game Phases
+
+### Warmup Phase
+
+Location: `core/src/games/strike/Strike.ts:109`
+
+- Players move freely
+- No objectives active
+- Waiting for all players to ready up
+- Transitions when all ready
+
+### Round Start Phase
+
+Location: `core/src/games/strike/Strike.ts:118`
+
+- Players spawn at team positions
+- KDA reset
+- Brief countdown
+- Transitions to play phase
+
+### Round Play Phase
+
+- Normal gameplay
+- Combat active
+- Objective pursuit
+- Ends when objective complete or time expires
+
+### Round End Phase
+
+- Shows winners
+- Score update
+- Brief pause before next round
+
+## Spawn System
+
+Location: `core/src/games/strike/Strike.ts:192`
+
+Predefined spawn points per team:
+
+```typescript
+const spawnPoints: Record<TeamNumber, XYZR[]> = {
+  1: [
+    { x: 8.1, y: 4.6, z: 1.2, r: 4.2 },
+    { x: 13.8, y: 6.6, z: 1.2, r: 1 },
+    { x: 15, y: 3, z: 1.2, r: 3.14 },
+    { x: 12, y: 5.6, z: 1.2, r: 1.7 },
+    { x: 12.7, y: 2.8, z: 1.2, r: 3.8 }
+  ],
+  2: [
+    { x: 7.8, y: 19.5, z: 0.3, r: -0.5 },
+    { x: 11, y: 19.5, z: 0.3, r: 0.9 },
+    { x: 9.5, y: 17.8, z: 0.3, r: 2 },
+    { x: 8, y: 17.8, z: 0.3, r: 4.3 },
+    { x: 7.5, y: 18, z: 0.3, r: 4.5 }
+  ]
+}
+```
+
+`r` is the rotation (yaw) for initial aim direction.
+
+## Controls
+
+Location: `core/src/games/strike/Strike.ts:209`
+
+```typescript
+const controls: HUDSystemProps = {
+  clusters: [
+    {
+      label: "switch team",
+      buttons: [["t"]]
+    },
+    {
+      label: "reload",
+      buttons: [["r"]]
+    },
+    {
+      label: "move",
+      buttons: [["A", "S", "D"], ["W"]]
+    },
+    {
+      label: "jump",
+      buttons: [["spacebar"]]
+    }
+  ]
+}
+```
+
+## KDA Tracking
+
+Location: `core/src/games/strike/Strike.ts:160`
+
+```typescript
+// On death
+if (health?.dead() && health.data.died === world.tick - 10) {
+  const { k, d, a } = health.getKDA()
+  health.setKDA({ k, d: d + 1, a })
+
+  // Award kill
+  const fromPlayer = world.entity(health.data.diedFrom || "")
+  const fromCharacter = fromPlayer?.components.controlling?.getCharacter(world)
+  if (fromCharacter?.components.health) {
+    const kda = fromCharacter.components.health.getKDA()
+    fromCharacter.components.health.setKDA({ 
+      k: kda.k + 1, 
+      d: kda.d, 
+      a: kda.a 
+    })
+  }
+}
+```
+
+## Key Features
+
+### Rollback Netcode
+
+Strike uses rollback for competitive FPS:
+- Low input latency
+- Hit registration accuracy
+- State reconciliation
+
+### Voxel Maps
+
+- Fully destructible (optional)
+- Custom block coloring
+- Efficient chunk rendering
+- Multiple map support
+
+### First-Person Camera
+
+- Pointer lock control
+- Mouse sensitivity settings
+- First/third person toggle
+- FOV customization
+
+### Inventory System
+
+- Multiple weapons
+- Reload mechanics
+- Weapon switching
+- Ammo management
+
+### Team System
+
+- 5v5 gameplay
+- Spawn points per team
+- Team switching (T key)
+- Scoreboard with teams
+
+## Mobile Support
+
+Location: `core/src/games/strike/Strike.ts` (uses craft/MobileUI)
+
+Touch controls:
+- Left joystick for movement
+- Right joystick for aim
+- Shoot button
+- Jump button
+- Weapon switching
+
+## Related Files
+
+- `Sarge.ts` - Player character
+- `RetakeMap.ts` - Main map
+- `TempleMap.ts` - Alternative map
+- `Scoreboard.ts` - Team stats UI
+- `HealthAmmo.ts` - HUD display
+- `PhaseBanner.ts` - Round messages
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Build" href="/games/build">
+    Voxel building in creative mode
+  </Card>
+  <Card title="Craft" href="/games/craft">
+    Survival with voxel terrain
+  </Card>
+</CardGroup>

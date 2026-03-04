@@ -1,0 +1,295 @@
+---
+title: "Delay Syncer"
+description: "Delay-based netcode synchronization for simple multiplayer games"
+---
+
+## Overview
+
+The `DelaySyncer` implements delay-based netcode, where all clients wait for server confirmation before simulating each tick. This is simpler than rollback but introduces input latency proportional to network ping.
+
+## How Delay Netcode Works
+
+```
+Client                          Server
+  |
+  |-- Send input (tick N+1) ---->
+  |                               |-- Receive all inputs
+  |                               |-- Simulate tick N
+  |<-- Send game state (tick N)---|
+  |
+  |-- Wait for server state
+  |-- Simulate tick N
+```
+
+**Key characteristics:**
+- Server is authoritative (source of truth)
+- Clients wait for server before advancing
+- No prediction or rollback needed
+- Input latency = round-trip time
+- Simple to implement and debug
+
+## Syncer Interface
+
+```ts
+export type Syncer = {
+  read: (_: { world: World, buffer: GameData[] }) => void
+  write: (world: World) => GameData
+}
+
+export const DelaySyncer = (): Syncer => ({
+  write: (world) => { /* ... */ },
+  read: ({ world, buffer }) => { /* ... */ }
+})
+```
+
+## Write: Send Input to Server
+
+```ts
+write: (world) => {
+  const message: GameData = {
+    actions: world.actions.fromTick(world.tick + 1),
+    chats: world.messages.atTick(world.tick) ?? {},
+    game: world.game.id,
+    playerId: world.client?.playerId() ?? "",
+    serializedEntities: {},
+    tick: world.tick + 1,
+    timestamp: Date.now(),
+    type: "game"
+  }
+
+  world.actions.clearTick(world.tick + 1)
+  return message
+}
+```
+
+**What gets sent:**
+- **actions**: Player inputs for next tick (tick + 1)
+- **chats**: Any chat messages from current tick
+- **game**: Current game ID
+- **playerId**: Local player's ID
+- **tick**: Next tick number
+- **timestamp**: Client timestamp for latency measurement
+
+**Note:** `serializedEntities` is empty because the server is authoritative and sends the full game state back.
+
+## Read: Apply Server State
+
+```ts
+read: ({ world, buffer }) => {
+  const message = buffer.shift() as GameData
+
+  if (!(message.tick > world.game.started)) return
+
+  // Remove entities not in server state
+  keys(world.entities).forEach((entityId) => {
+    if (world.entities[entityId]?.components.networked) {
+      if (!message.serializedEntities[entityId] && message.game === world.game.id) {
+        console.log("DELETE ENTITY", entityId)
+        world.removeEntity(entityId)
+      }
+    }
+  })
+
+  // Add new entities from server
+  keys(message.serializedEntities).forEach((entityId) => {
+    if (!world.entities[entityId]) {
+      const entityKind = entityId.split("-")[0]
+      const constructor = entityConstructors[entityKind]
+      if (constructor !== undefined) {
+        console.log("ADD ENTITY", entityId)
+        world.addEntity(constructor({ id: entityId }))
+      }
+    }
+  })
+
+  // Validate client prediction
+  let rollback = false
+
+  if (message.tick !== world.tick) {
+    console.log(`MUST ROLLBACK tick:${world.tick}`, `old tick msg:${message.tick}`)
+    rollback = true
+  }
+
+  // Compare entity states
+  if (!rollback) {
+    for (const [entityId, msgEntity] of entries(message.serializedEntities)) {
+      const localEntity = world.entities[entityId]?.serialize()
+      if (localEntity && stringify(localEntity) !== stringify(msgEntity)) {
+        console.log(`MUST ROLLBACK entity: ${entityId} mismatch`)
+        rollback = true
+        break
+      }
+    }
+  }
+
+  // Rollback to server state if needed
+  if (rollback) {
+    world.tick = message.tick
+
+    if (message.game !== world.game.id) {
+      world.setGame(message.game)
+    }
+
+    keys(message.serializedEntities).forEach((entityId) => {
+      if (world.entities[entityId]) {
+        world.entities[entityId].deserialize(message.serializedEntities[entityId])
+      }
+    })
+  }
+
+  // Apply server actions
+  entries(message.actions).forEach(([tick, actions]) => {
+    entries(actions).forEach(([entityId, actions]) => {
+      actions.forEach((action) => {
+        world.actions.push(Number(tick), entityId, action)
+      })
+    })
+  })
+}
+```
+
+## Entity Constructors
+
+The syncer uses entity constructors to instantiate entities from the server:
+
+```ts
+export const entityConstructors: Record<string, (_: { id?: string }) => Entity> = {
+  "player": Player,
+  "d3apple": Apple,
+  "ping": ({ id }) => id ? LegendsPing({ id }) : LegendsPing(),
+  "bot": ({ id }: { id: string }) => {
+    const x = Number(id.split("|")[1])
+    const y = Number(id.split("|")[2])
+    return Bot(1, { x, y })
+  }
+}
+
+// Entity ID format: "entityKind-hash"
+// Example: "player-abc123"
+const entityKind = entityId.split("-")[0]
+const constructor = entityConstructors[entityKind]
+```
+
+## When to Use Delay Netcode
+
+<CardGroup cols={2}>
+  <Card title="Good For" icon="check">
+    - Turn-based games
+    - Slow-paced gameplay
+    - Co-op games where precise timing isn't critical
+    - Games with low player counts
+    - Simple game logic
+  </Card>
+  
+  <Card title="Not Ideal For" icon="xmark">
+    - Fast-paced action games
+    - Fighting games
+    - Competitive shooters
+    - Games requiring instant input response
+    - High-latency connections (>100ms)
+  </Card>
+</CardGroup>
+
+## Example: Volley Game
+
+```ts
+import { GameBuilder } from "@piggo-gg/core"
+
+export const VolleyGame = GameBuilder({
+  id: "volley",
+  renderer: "three",
+  netcode: "delay",  // Use delay-based sync
+  systems: [/* ... */],
+  state: { score: [0, 0] },
+  settings: { gravity: 0.01 }
+})
+```
+
+## Client-Side Usage
+
+<Tabs>
+  <Tab title="Client">
+    ```ts
+    import { DefaultWorld, Client, NetClientReadSystem, NetClientWriteSystem } from "@piggo-gg/core"
+
+    const world = DefaultWorld({ mode: "client" })
+    const client = Client({ world })
+
+    // Create lobby (automatically adds net systems)
+    client.lobbyCreate("volley", (response) => {
+      console.log("Lobby ID:", response.lobbyId)
+      
+      // DelaySyncer is used because game.netcode === "delay"
+      // Input is sent on tick N for simulation on tick N+1
+    })
+
+    // Player input is buffered and sent next tick
+    world.actions.push(world.tick + 1, characterId, {
+      actionId: "jump",
+      playerId: client.playerId()
+    })
+    ```
+  </Tab>
+  
+  <Tab title="Server">
+    ```ts
+    import { ServerWorld, NetServerSystem } from "@piggo-gg/server"
+
+    const serverWorld = ServerWorld({ creator: ws })
+
+    // NetServerSystem processes delay netcode
+    // - Collects inputs from all clients
+    // - Simulates tick N
+    // - Sends authoritative state to all clients
+    ```
+  </Tab>
+</Tabs>
+
+## Comparison with Rollback
+
+| Feature | Delay Netcode | Rollback Netcode |
+|---------|---------------|------------------|
+| **Input Latency** | High (RTT) | Low (instant) |
+| **Complexity** | Simple | Complex |
+| **Client Prediction** | No | Yes |
+| **Rollback Required** | No | Yes |
+| **Best For** | Turn-based, co-op | Action, competitive |
+| **Server Authority** | Full | Validation |
+| **Bandwidth** | Low | Higher |
+
+## Debugging Delay Sync
+
+```ts
+// Enable logging in DelaySyncer
+if (rollback) {
+  console.log(`MUST ROLLBACK tick:${world.tick}`, reason)
+}
+
+// Check entity sync
+if (numLocal !== numRemote) {
+  console.log(`entity count local:${numLocal} remote:${numRemote}`)
+}
+
+// Track message flow
+console.log(`Client tick ${world.tick}, waiting for server tick ${world.tick}`)
+```
+
+## Performance Considerations
+
+**Pros:**
+- Minimal CPU usage (no rollback simulation)
+- Lower bandwidth (no prediction correction)
+- Simpler state management
+- Easier to debug
+
+**Cons:**
+- Noticeable input lag on high latency
+- Poor experience over 100ms+ connections
+- Game feels less responsive
+
+## Source Reference
+
+- DelaySyncer: `core/src/net/DelaySyncer.ts`
+- NetServerSystem: `core/src/ecs/systems/net/NetServerSystem.ts:117-153`
+- NetClientWriteSystem: `core/src/ecs/systems/net/NetClientSystem.ts:6-36`
+- NetClientReadSystem: `core/src/ecs/systems/net/NetClientSystem.ts:38-113`

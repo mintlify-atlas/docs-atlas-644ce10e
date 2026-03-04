@@ -1,0 +1,501 @@
+---
+title: Cameras
+description: Camera systems for 3D first/third-person and 2D top-down perspectives with smooth interpolation and dynamic controls
+---
+
+## Overview
+
+Piggo provides two camera systems: `ThreeCamera` for 3D games with first/third-person perspectives, and `PixiCamera` for 2D games with top-down views. Both support smooth interpolation, dynamic controls, and integration with the ECS architecture.
+
+## ThreeCamera
+
+3D camera with first-person and third-person modes, smooth transitions, and directional helpers.
+
+### Type Definition
+
+<ParamField path="c" type="PerspectiveCamera">
+  Three.js perspective camera instance
+</ParamField>
+
+<ParamField path="mode" type="'first' | 'third'" default="first">
+  Camera perspective mode
+</ParamField>
+
+<ParamField path="transition" type="number" default="125">
+  Transition progress when switching modes (0-125)
+</ParamField>
+
+### Methods
+
+#### pos
+
+Returns the current camera position in world coordinates.
+
+```typescript
+const cameraPos = world.three?.camera.pos()
+// { x: 10, y: 5, z: 2 }
+```
+
+**Returns:** `XYZ`
+
+#### dir
+
+Calculates the camera's forward direction vector based on aim.
+
+```typescript
+const forward = world.three?.camera.dir(world, 5)
+// Vector pointing forward, scaled by 5
+```
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+<ParamField path="factor" type="number" default="1">
+  Scale multiplier for the direction vector
+</ParamField>
+
+**Returns:** `XYZ`
+
+**Math:**
+```typescript
+dir = {
+  x: -sin(localAim.x) * cos(localAim.y),
+  y: -cos(localAim.x) * cos(localAim.y),
+  z: sin(localAim.y)
+}
+```
+
+#### right
+
+Calculates the camera's right direction vector.
+
+```typescript
+const right = world.three?.camera.right(world, 1)
+```
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+<ParamField path="factor" type="number" default="1">
+  Scale multiplier
+</ParamField>
+
+**Returns:** `XYZ`
+
+**Math:**
+```typescript
+right = {
+  x: cos(localAim.x),
+  y: -sin(localAim.x),
+  z: 0
+}
+```
+
+#### left
+
+Calculates the camera's left direction vector.
+
+```typescript
+const left = world.three?.camera.left(world, 1)
+```
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+<ParamField path="factor" type="number" default="1">
+  Scale multiplier
+</ParamField>
+
+**Returns:** `XYZ`
+
+#### forward
+
+Calculates forward vector projected onto horizontal plane (z=0).
+
+```typescript
+const forward = world.three?.camera.forward(world, 1)
+```
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+<ParamField path="factor" type="number" default="1">
+  Scale multiplier
+</ParamField>
+
+**Returns:** `XYZ`
+
+### Configuration
+
+```typescript
+import { ThreeCamera } from "@piggo-gg/core"
+
+const camera = ThreeCamera()
+
+// Configure camera
+camera.c.fov = 60
+camera.c.near = 0.001
+camera.c.far = 300
+camera.mode = "third"
+```
+
+**Default Settings:**
+- FOV: 60 degrees
+- Near plane: 0.001
+- Far plane: 300
+- Rotation order: YXZ
+
+## ThreeCameraSystem
+
+System that updates camera position and rotation based on player character.
+
+### Configuration
+
+```typescript build/Build.ts
+import { ThreeCameraSystem } from "@piggo-gg/core"
+
+systems: [
+  ThreeCameraSystem({ height: 0.5, distance: 1 })
+]
+```
+
+<ParamField path="height" type="number" required>
+  Camera height above character position
+</ParamField>
+
+<ParamField path="distance" type="number" required>
+  Distance behind character in third-person mode
+</ParamField>
+
+### Behavior
+
+**First-Person Mode:**
+- Camera positioned at character position + height offset
+- Rotation directly from `localAim.x` and `localAim.y`
+- Recoil effect applied (if enabled)
+
+**Third-Person Mode:**
+- Camera offset behind character based on aim direction
+- `lookAt` character position + height
+- Smooth transition from first-person
+
+**Smooth Transitions:**
+- 125 tick transition when switching modes
+- Linear interpolation between positions
+- First 100 ticks interpolate, last 25 settle
+
+### Example Usage
+
+```typescript strike/Strike.ts
+ThreeCameraSystem({ height: 0.5, distance: 0.8 })
+
+// Switch camera mode
+world.three.camera.mode = "third"
+// Automatically transitions over 125 ticks
+```
+
+## PixiCamera
+
+2D camera with zoom, pan, and coordinate transformation for top-down games.
+
+### Type Definition
+
+<ParamField path="root" type="Container">
+  Pixi container that holds all world-space renderables
+</ParamField>
+
+<ParamField path="focus" type="Entity | undefined">
+  Entity the camera follows (usually player character)
+</ParamField>
+
+<ParamField path="scale" type="number" default="2.5">
+  Camera zoom level
+</ParamField>
+
+<ParamField path="angle" type="0 | 1 | 2 | 3" default="0">
+  Camera rotation angle (0=0°, 1=90°, 2=180°, 3=270°)
+</ParamField>
+
+### Methods
+
+#### add
+
+Adds a renderable to the camera's world space.
+
+```typescript
+world.pixi?.camera.add(renderable)
+```
+
+<ParamField path="renderable" type="Renderable" required>
+  Renderable to add to camera root
+</ParamField>
+
+#### remove
+
+Removes a renderable from the camera's world space.
+
+```typescript
+world.pixi?.camera.remove(renderable)
+```
+
+<ParamField path="renderable" type="Renderable" required>
+  Renderable to remove from camera root
+</ParamField>
+
+#### scaleBy
+
+Adjusts camera zoom by a delta amount.
+
+```typescript
+world.pixi?.camera.scaleBy(0.5) // Zoom in
+world.pixi?.camera.scaleBy(-0.5) // Zoom out
+```
+
+<ParamField path="delta" type="number" required>
+  Amount to change scale (clamped to min/max)
+</ParamField>
+
+**Scale Limits:**
+- Mobile: 1.0 to 5.0
+- Desktop: 1.5 to 5.0
+
+#### scaleTo
+
+Sets camera zoom to a specific value.
+
+```typescript
+world.pixi?.camera.scaleTo(3.0)
+```
+
+<ParamField path="scale" type="number" required>
+  Target zoom level (clamped to limits)
+</ParamField>
+
+#### moveBy
+
+Moves camera by a pixel offset.
+
+```typescript
+world.pixi?.camera.moveBy({ x: 10, y: -5 })
+```
+
+<ParamField path="offset" type="XY" required>
+  Pixel offset to move camera
+</ParamField>
+
+#### moveTo
+
+Moves camera to center on a world position.
+
+```typescript
+world.pixi?.camera.moveTo({ x: 100, y: 50 })
+```
+
+<ParamField path="position" type="XY" required>
+  World position to center camera on
+</ParamField>
+
+#### inFrame
+
+Checks if a world position is visible in the viewport.
+
+```typescript
+const visible = world.pixi?.camera.inFrame({ x: 100, y: 50 })
+```
+
+<ParamField path="position" type="XY" required>
+  World position to check
+</ParamField>
+
+**Returns:** `boolean`
+
+#### toWorldCoords
+
+Converts screen coordinates to world coordinates.
+
+```typescript
+const worldPos = world.pixi?.camera.toWorldCoords({ x: mouseX, y: mouseY })
+// Click position in world space
+```
+
+<ParamField path="screenPos" type="XY" required>
+  Screen pixel coordinates
+</ParamField>
+
+**Returns:** `XY` - World coordinates
+
+#### toCameraCoords
+
+Converts world coordinates to screen coordinates.
+
+```typescript
+const screenPos = world.pixi?.camera.toCameraCoords({ x: 100, y: 50 })
+// Where to draw UI element for world position
+```
+
+<ParamField path="worldPos" type="XY" required>
+  World coordinates
+</ParamField>
+
+**Returns:** `XY` - Screen pixel coordinates
+
+### Configuration
+
+```typescript
+import { PixiCamera } from "@piggo-gg/core"
+import { Application } from "pixi.js"
+
+const app = new Application()
+const camera = PixiCamera(app)
+
+// Configure camera
+camera.scale = 3.0
+camera.angle = 0
+```
+
+## PixiCameraSystem
+
+System that updates camera to follow focus entity with smooth interpolation.
+
+### Configuration
+
+```typescript island/Island.ts
+import { PixiCameraSystem, screenWH, min } from "@piggo-gg/core"
+
+systems: [
+  PixiCameraSystem({
+    follow: (pos) => ({ x: pos.x, y: pos.y - 10, z: 0 }),
+    resize: () => {
+      const { w } = screenWH()
+      return min(3.4, w / 400)
+    }
+  })
+]
+```
+
+<ParamField path="follow" type="(pos: XYZ) => XYZ">
+  Function to calculate camera target from focus position
+</ParamField>
+
+<ParamField path="resize" type="() => number">
+  Function to calculate zoom on window resize
+</ParamField>
+
+### Behavior
+
+**onTick:**
+- Sets focus to player character
+- Culls off-screen entities (when `cullable: true`)
+- Updates target scale on resize
+
+**onRender:**
+- Interpolates scale changes smoothly
+- Interpolates character position
+- Applies `follow` offset function
+- Centers camera on target position
+
+### Zoom Controls
+
+Mouse wheel zooming automatically enabled:
+
+```typescript
+// User scrolls wheel
+// System updates targetScale based on scroll direction
+// Smooth interpolation to new scale over multiple frames
+```
+
+**Zoom Speed:** Based on scroll delta magnitude
+
+### Example Usage
+
+```typescript legends/Legends.ts
+PixiCameraSystem({
+  follow: (pos) => ({
+    x: pos.x,
+    y: pos.y,
+    z: 0
+  }),
+  resize: () => {
+    const { w, h } = screenWH()
+    const gameWidth = 200
+    const gameHeight = 200
+    return min(w / gameWidth, h / gameHeight) * 0.8
+  }
+})
+```
+
+## Common Patterns
+
+### Switching 3D Camera Modes
+
+```typescript
+// Toggle between first and third person
+const toggleCamera = () => {
+  if (world.three?.camera.mode === "first") {
+    world.three.camera.mode = "third"
+  } else if (world.three?.camera) {
+    world.three.camera.mode = "first"
+  }
+}
+```
+
+### Raycasting from Camera
+
+```typescript
+import { Raycaster } from "three"
+
+const raycaster = new Raycaster()
+const origin = world.three?.camera.pos()
+const direction = world.three?.camera.dir(world)
+
+if (origin && direction) {
+  raycaster.set(
+    new Vector3(origin.x, origin.z, origin.y),
+    new Vector3(direction.x, direction.z, direction.y)
+  )
+  const intersects = raycaster.intersectObjects(world.three.scene.children)
+}
+```
+
+### Responsive 2D Zoom
+
+```typescript
+PixiCameraSystem({
+  resize: () => {
+    const { w, h } = screenWH()
+    
+    // Mobile: tighter zoom
+    if (isMobile()) {
+      return min(2.5, w / 300)
+    }
+    
+    // Desktop: wider view
+    return min(4.0, w / 500)
+  }
+})
+```
+
+### Camera Shake Effect
+
+```typescript
+const shakeCamera = (intensity: number) => {
+  const offset = {
+    x: (Math.random() - 0.5) * intensity,
+    y: (Math.random() - 0.5) * intensity
+  }
+  world.pixi?.camera.moveBy(offset)
+}
+
+// On explosion
+shakeCamera(10)
+```
+
+## See Also
+
+- [ThreeRenderer](/api/graphics/three-renderer) - 3D renderer setup
+- [PixiRenderer](/api/graphics/pixi-renderer) - 2D renderer setup
+- [Position](/api/components/position) - Position component for entities

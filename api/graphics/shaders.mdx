@@ -1,0 +1,520 @@
+---
+title: Shaders
+description: Custom GLSL shaders for water, sky, and outline effects in Three.js games
+---
+
+## Overview
+
+Piggo includes custom shader materials for realistic environmental effects in 3D games. These shaders are optimized for real-time rendering and integrate seamlessly with Three.js.
+
+## Water Shader
+
+Realistic water surface with reflections, shadows, refractions, and animated normal maps.
+
+### Usage
+
+```typescript build/Build.ts
+import { Water } from "@piggo-gg/core"
+
+entities: [
+  Water()
+]
+```
+
+### Features
+
+<CardGroup cols={2}>
+  <Card title="Animated Normals" icon="wave">
+    Two scrolling normal maps create dynamic wave patterns
+  </Card>
+  <Card title="Reflections" icon="mirror">
+    Sky reflections with Fresnel effect for realistic water surface
+  </Card>
+  <Card title="Shadows" icon="cloud-sun">
+    Receives shadows from Three.js shadow maps
+  </Card>
+  <Card title="Specular Highlights" icon="star">
+    Configurable specular reflection from sun/light sources
+  </Card>
+  <Card title="Underwater View" icon="water">
+    Different rendering when camera is below surface
+  </Card>
+  <Card title="Day/Night Cycle" icon="sun">
+    Color adapts based on `uDay` uniform (0=night, 1=day)
+  </Card>
+</CardGroup>
+
+### Configuration
+
+```typescript
+const water = Water()
+
+// Shader automatically configures:
+// - Surface geometry (200x200 quad)
+// - Two normal maps with scrolling animation
+// - Lighting integration
+// - Shadow receiving
+```
+
+### Shader Uniforms
+
+<ParamField path="uTime" type="float">
+  Animation time updated each frame: `(world.tick + delta / 25) * 0.012`
+</ParamField>
+
+<ParamField path="uDay" type="float">
+  Day/night cycle value (0.0 = night, 1.0 = day)
+</ParamField>
+
+<ParamField path="uNormalMap1" type="sampler2D">
+  First normal map texture (scrolls at `VELOCITY_1`)
+</ParamField>
+
+<ParamField path="uNormalMap2" type="sampler2D">
+  Second normal map texture (scrolls at `VELOCITY_2`)
+</ParamField>
+
+<ParamField path="uDirToLight" type="vec3">
+  Direction to light source for specular calculation
+</ParamField>
+
+<ParamField path="uLight" type="vec3">
+  Light color and intensity
+</ParamField>
+
+### Shader Constants
+
+```glsl
+const float NORMAL_MAP_SCALE = 0.01
+const float NORMAL_MAP_STRENGTH = 1.0
+const vec2 VELOCITY_1 = vec2(0.1, 0.0)
+const vec2 VELOCITY_2 = vec2(0.0, 0.1)
+const float SPECULAR_SHARPNESS = 3.0
+const float MAX_VIEW_DEPTH = 100.0
+const float DENSITY = 0.35
+const vec3 ABSORPTION = vec3(1.0) / vec3(10.0, 40.0, 100.0)
+```
+
+### Visual Effects
+
+**Above Surface:**
+- Fresnel-based reflectivity
+- Sky color reflection (blue tones with day cycle)
+- Specular highlights from sun
+- Shadow darkening
+- Distance fog
+
+**Below Surface:**
+- Exponential light absorption
+- Color shift toward blue-green
+- Refraction when viewing upward
+- Critical angle calculation for total internal reflection
+
+### Example Integration
+
+```typescript
+import { Water, dayness } from "@piggo-gg/core"
+
+const water = Water()
+
+// Water shader automatically reads world.tick for animation
+// Day/night cycle from dayness() function
+```
+
+## Sky Shader
+
+Procedural sky with day/night cycle, clouds, sun, and starfield.
+
+### Usage
+
+```typescript strike/Strike.ts
+import { Sky } from "@piggo-gg/core"
+
+entities: [
+  Sky()
+]
+```
+
+### Features
+
+<CardGroup cols={2}>
+  <Card title="Starfield" icon="stars">
+    Procedural stars with color variation and brightness
+  </Card>
+  <Card title="Day/Night Gradient" icon="cloud-sun">
+    Horizon-to-zenith color gradient adapts to time
+  </Card>
+  <Card title="Sun" icon="sun">
+    Bright sun disc with core and halo
+  </Card>
+  <Card title="Clouds" icon="cloud">
+    FBM-based procedural clouds
+  </Card>
+  <Card title="Underwater Tint" icon="water">
+    Dark blue tint when camera is below water
+  </Card>
+  <Card title="Sphere Mapping" icon="globe">
+    Rendered on 250-unit sphere following camera
+  </Card>
+</CardGroup>
+
+### Configuration
+
+```typescript
+import { Sky, dayness } from "@piggo-gg/core"
+
+const sky = Sky({
+  getDayness: () => dayness(world.tick, 0)
+})
+```
+
+<ParamField path="getDayness" type="() => number">
+  Optional function to override day/night calculation. Returns 0.0-1.0.
+</ParamField>
+
+### Shader Uniforms
+
+<ParamField path="uTime" type="float">
+  Animation time: `world.tick + delta / 25`
+</ParamField>
+
+<ParamField path="uDay" type="float">
+  Day/night cycle value (0.0 = night, 1.0 = day)
+</ParamField>
+
+<ParamField path="uDensity" type="float" default="0.0015">
+  Star density (higher = more stars)
+</ParamField>
+
+<ParamField path="uBrightness" type="float" default="0.9">
+  Star brightness multiplier
+</ParamField>
+
+<ParamField path="uHorizon" type="vec3" default="[0, 0, 0.267]">
+  Horizon color (night)
+</ParamField>
+
+<ParamField path="uZenith" type="vec3" default="[0, 0, 0]">
+  Zenith color (night)
+</ParamField>
+
+<ParamField path="uResolution" type="vec2">
+  Screen resolution
+</ParamField>
+
+### Starfield System
+
+Proceduralstarfield using octahedral mapping:
+
+```glsl
+// Two layers with different scales and densities
+Layer 0: scale=420,  density=55%, radius=0.0040
+Layer 1: scale=1111, density=35%, radius=0.0024
+
+// Star colors
+cool = vec3(0.8, 0.7, 1.0)  // Blue-white
+warm = vec3(1.0, 1.0, 0.6)  // Yellow-white
+```
+
+**Star Appearance:**
+- Core disc with soft falloff
+- Subtle halo around bright stars
+- Color temperature variation
+- Fade out during day
+
+### Cloud System
+
+Fractional Brownian Motion (FBM) for realistic clouds:
+
+```glsl
+float fbm(vec3 p) {
+  float f = 0.0
+  float a = 0.5
+  
+  for (int i = 0; i < 5; i++) {
+    f += a * noise(p)
+    p = p * 2.0 + vec3(13.1, 7.2, 5.3)
+    a *= 0.5
+  }
+  
+  return f
+}
+```
+
+**Cloud Features:**
+- Horizon curtain effect
+- Slow animation based on `uTime`
+- Height-based opacity
+- Brightness boost for volumetric appearance
+
+### Sun Rendering
+
+```glsl
+vec3 getSun(vec3 dir, vec3 sunDir) {
+  float sun = max(dot(dir, sunDir), 0.0)
+  float core = smoothstep(0.851, 1.0, sun)
+  core *= core
+  return vec3(1.0, 0.8, 0.2) * (core * 5000.0)
+}
+```
+
+**Sun Appearance:**
+- Bright yellow-white core
+- Smooth disc edge
+- Very high intensity (5000x)
+- Fades at night, tinted blue
+
+### Example with Day/Night Cycle
+
+```typescript
+import { Sky, SystemBuilder } from "@piggo-gg/core"
+
+const DayNightSystem = SystemBuilder({
+  id: "DayNightSystem",
+  init: (world) => {
+    let timeOfDay = 0
+    
+    return {
+      id: "DayNightSystem",
+      query: [],
+      onTick: () => {
+        timeOfDay += 0.001
+        if (timeOfDay > 1) timeOfDay = 0
+      }
+    }
+  }
+})
+
+const sky = Sky({
+  getDayness: () => {
+    // Custom day/night cycle
+    const t = (world.tick * 0.0005) % 1
+    return Math.sin(t * Math.PI)
+  }
+})
+```
+
+## Water2D Shader
+
+2D water effect for Pixi.js games using displacement and blur filters.
+
+### Usage
+
+```typescript island/Island.ts
+import { Water2D } from "@piggo-gg/core"
+
+entities: [
+  Water2D({ pos: { x: 0, y: -60 } })
+]
+```
+
+<ParamField path="pos" type="XY">
+  World position for water plane
+</ParamField>
+
+### Features
+
+- **Gradient Fill:** Blue gradient from light to dark
+- **Displacement Filter:** Animated distortion using displacement map
+- **Stars Overlay:** Tiling night sky texture
+- **Blur Filter:** Soft edge effects
+
+### Implementation
+
+```typescript
+const water2D = Entity({
+  id: "water2D",
+  components: {
+    position: Position(pos),
+    renderable: Renderable({
+      onRender: ({ since }) => {
+        // Scroll displacement map
+        if (dMap) dMap.x += since / 25 * 1
+        if (dMap) dMap.y += since / 25 * 0.7
+      },
+      setup: async (r) => {
+        // Create gradient water area
+        const area = pixiRect({ x: -1000, y: -60, w: 2000, h: 2000 })
+          .fill(new FillGradient({
+            colorStops: [
+              { offset: 0, color: 0x0050cb },
+              { offset: 0.07, color: 0x00255d },
+              { offset: 0.12, color: 0x000010 }
+            ]
+          }))
+        
+        // Load displacement map
+        dMap = new Sprite(await Assets.load("displacement_map.png"))
+        dMap.texture.source.addressMode = "repeat"
+        
+        // Create stars with filters
+        const stars = new TilingSprite({
+          texture: night.texture,
+          width: 2000,
+          height: 2000,
+          filters: [
+            new DisplacementFilter({ sprite: dMap, scale: 30 }),
+            new BlurFilter({ strength: 1 })
+          ]
+        })
+        
+        r.c.addChild(dMap, area, stars)
+      }
+    })
+  }
+})
+```
+
+## Outline Material
+
+Simple wireframe/grid shader for debugging or stylized effects.
+
+### Usage
+
+```typescript
+import { OutlineMaterial } from "@piggo-gg/core"
+import { Mesh, BoxGeometry } from "three"
+
+const mesh = new Mesh(
+  new BoxGeometry(1, 1, 1),
+  OutlineMaterial()
+)
+```
+
+### Shader Uniforms
+
+<ParamField path="thickness" type="float" default="0.6">
+  Line thickness (lower = thicker)
+</ParamField>
+
+### Features
+
+- UV-based grid lines
+- Transparent material
+- Configurable line thickness
+- Light blue-white color scheme
+
+### Shader Code
+
+```glsl
+float edgeFactor(vec2 p) {
+  vec2 grid = abs(fract(p - 0.5) - 0.5) / fwidth(p)
+  float d = min(grid.x, grid.y)
+  return step(d, 1.0 / thickness)
+}
+
+void main() {
+  float edge = edgeFactor(vUv)
+  vec3 c = mix(vec3(0.9, 0.9, 1.0), vec3(0), edge)
+  gl_FragColor = vec4(c, edge)
+}
+```
+
+## Custom Shader Development
+
+### Creating a Custom Shader
+
+```typescript
+import { Entity, Position, Three } from "@piggo-gg/core"
+import { ShaderMaterial, PlaneGeometry, Mesh } from "three"
+
+const vertexShader = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+
+const fragmentShader = `
+  uniform float uTime;
+  varying vec2 vUv;
+  
+  void main() {
+    vec3 color = vec3(vUv.x, vUv.y, sin(uTime));
+    gl_FragColor = vec4(color, 1.0);
+  }
+`
+
+export const CustomShader = () => {
+  let mesh: Mesh | undefined
+  
+  return Entity<Position | Three>({
+    id: "custom-shader",
+    components: {
+      position: Position(),
+      three: Three({
+        init: async ({ o }) => {
+          const material = new ShaderMaterial({
+            vertexShader,
+            fragmentShader,
+            uniforms: {
+              uTime: { value: 0.0 }
+            }
+          })
+          
+          mesh = new Mesh(new PlaneGeometry(10, 10), material)
+          o.push(mesh)
+        },
+        onRender: ({ world, delta }) => {
+          if (mesh) {
+            const mat = mesh.material as ShaderMaterial
+            mat.uniforms.uTime.value = world.tick + delta / 25
+          }
+        }
+      })
+    }
+  })
+}
+```
+
+### Shader Best Practices
+
+1. **Update uniforms in onRender** for smooth animation
+2. **Use world.tick + delta** for interpolated time
+3. **Include Three.js chunks** for shadow/lighting integration
+4. **Set side: 2** for double-sided rendering
+5. **Enable lights: true** for lighting integration
+6. **Use forceSinglePass: true** for optimization
+
+### Integrating with Lighting
+
+```glsl
+#include <common>
+#include <shadowmap_pars_vertex>
+
+void main() {
+  vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * viewMatrix * worldPosition;
+  
+  #include <shadowmap_vertex>
+}
+```
+
+```glsl
+#include <common>
+#include <shadowmap_pars_fragment>
+uniform bool receiveShadow;
+#include <shadowmask_pars_fragment>
+
+void main() {
+  float shadow = getShadowMask();
+  vec3 color = vec3(1.0) * shadow;
+  gl_FragColor = vec4(color, 1.0);
+}
+```
+
+## Performance Tips
+
+- **Minimize texture lookups:** Cache sampled values
+- **Use const for fixed values:** Helps compiler optimize
+- **Avoid branching:** Use `mix()` and `step()` instead of `if`
+- **Limit loop iterations:** Keep loops small and bounded
+- **Use lower precision:** `mediump` for mobile when possible
+- **Combine operations:** Reduce ALU instructions
+
+## See Also
+
+- [ThreeRenderer](/api/graphics/three-renderer) - Three.js renderer setup
+- [Sky Component](/api/entities/environment#sky) - Sky entity usage
+- [Water Component](/api/entities/environment#water) - Water entity usage

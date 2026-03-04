@@ -1,0 +1,205 @@
+---
+title: 'Built-in Games Overview'
+description: 'Explore the multiplayer games built with Piggo'
+---
+
+Piggo comes with a collection of fully-featured multiplayer games that showcase the framework's capabilities. Each game demonstrates different aspects of the ECS architecture, rendering systems, and networking features.
+
+## Game Collection
+
+<CardGroup cols={2}>
+  <Card title="Lobby" icon="users" href="/games/lobby">
+    The central hub where players gather and select games
+  </Card>
+  <Card title="Volley" icon="volleyball" href="/games/volley">
+    Fast-paced 2v2 volleyball with physics-based gameplay
+  </Card>
+  <Card title="Strike" icon="gun" href="/games/strike">
+    Tactical team-based FPS with voxel maps
+  </Card>
+  <Card title="Craft" icon="hammer" href="/games/craft">
+    Survival game with procedural terrain and building
+  </Card>
+  <Card title="Build" icon="cube" href="/games/build">
+    Creative sandbox for building with voxel blocks
+  </Card>
+  <Card title="Island" icon="island-tropical" href="/games/island">
+    Dice-based adventure game with turn-based combat
+  </Card>
+  <Card title="Mars" icon="rocket" href="/games/mars">
+    Rocket launching simulation game
+  </Card>
+  <Card title="Hoops" icon="basketball" href="/games/hoops">
+    2v2 basketball with realistic shooting mechanics
+  </Card>
+  <Card title="Legends" icon="shield" href="/games/legends">
+    MOBA-style game with fog of war and minions
+  </Card>
+  <Card title="Jam" icon="music" href="/games/jam">
+    Rhythm and movement game with music
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+All Piggo games follow consistent architectural patterns:
+
+### GameBuilder Structure
+
+Every game is defined using the `GameBuilder` pattern:
+
+```typescript
+export const MyGame: GameBuilder<StateType, SettingsType> = {
+  id: "mygame",
+  init: (world) => ({
+    id: "mygame",
+    netcode: "rollback" | "delay",
+    renderer: "pixi" | "three",
+    settings: { /* game settings */ },
+    state: { /* game state */ },
+    systems: [ /* system array */ ],
+    entities: [ /* entity array */ ]
+  })
+}
+```
+
+### Netcode Options
+
+- **Rollback**: Used for fast-paced competitive games (Volley, Strike, Hoops)
+- **Delay**: Used for slower-paced or single-player focused games (Lobby, Mars, Legends)
+
+### Renderer Types
+
+- **Pixi**: 2D sprite-based rendering (Volley, Hoops, Island, Mars, Lobby)
+- **Three**: 3D voxel/model rendering (Strike, Craft, Build, Legends, Jam)
+
+### Core Systems
+
+Most games include these common systems:
+
+- `PhysicsSystem` or `BlockPhysicsSystem` - Movement and collision
+- `SpawnSystem` - Player character spawning
+- Renderer system (`PixiRenderSystem` or `ThreeSystem`)
+- Camera system (`PixiCameraSystem` or `ThreeCameraSystem`)
+- `HUDSystem` - Controls display
+- Nametag system for multiplayer
+
+### Character Spawning
+
+Each game defines a character spawner function:
+
+```typescript
+SpawnSystem({ 
+  spawner: CharacterFunction, 
+  pos: { x: 0, y: 0, z: 0 } 
+})
+```
+
+The spawner creates a character entity for each player with components like:
+- `Position` - Location and physics
+- `Input` - Control mapping
+- `Actions` - Available actions
+- `Renderable` or `Three` - Visual representation
+- `Team` - Team assignment
+- `Networked` - Network synchronization
+
+### State Management
+
+Game state is typed and includes:
+- Phase/round tracking
+- Score/points
+- Game-specific mechanics (jump tracking, shot data, etc.)
+
+```typescript
+export type GameState = {
+  phase: "warmup" | "play" | "end"
+  score: Record<number, number>
+  // game-specific state
+}
+```
+
+### Settings
+
+Player-configurable settings:
+
+```typescript
+export type GameSettings = {
+  showControls: boolean
+  showCrosshair?: boolean
+  showNametags?: boolean
+  mouseSensitivity?: number
+}
+```
+
+## Renderer-Specific Patterns
+
+### Pixi Games
+
+Pixi games use sprite-based rendering:
+
+- `PixiRenderSystem` - Main rendering
+- `PixiCameraSystem` - 2D camera with zoom/follow
+- `PixiNametagSystem` - Player name display
+- `ShadowSystem` - Sprite shadows
+- `Background()` entity with animated rays
+
+### Three Games
+
+Three.js games use 3D voxel worlds:
+
+- `ThreeSystem` - 3D rendering
+- `ThreeCameraSystem` - 3D camera (first/third person)
+- `BlockMeshSystem` - Voxel chunk rendering
+- `ThreeNametagSystem` - 3D nametags
+- `Sun()` and `Sky()` entities for lighting
+
+## Input Patterns
+
+### Desktop Controls
+
+Most games use WASD movement:
+
+```typescript
+Input({
+  press: {
+    ...WASDInputMap.press,
+    " ": () => ({ actionId: "jump" }),
+    "mb1": () => ({ actionId: "shoot" })
+  }
+})
+```
+
+### Mobile Support
+
+Games include mobile UI components:
+
+```typescript
+const mobileUI = MobileUI(world)
+// Update in system:
+mobileUI?.update()
+```
+
+### Joystick Input
+
+Mobile joystick mapping:
+
+```typescript
+joystick: ({ client, character }) => {
+  const { power, angle } = client.controls.left
+  return {
+    actionId: "move",
+    params: { x: cos(angle) * power, y: sin(angle) * power }
+  }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Game Architecture" href="/concepts/architecture">
+    Learn about ECS patterns and game structure
+  </Card>
+  <Card title="Create a Game" href="/building/creating-games">
+    Build your own game using Piggo
+  </Card>
+</CardGroup>

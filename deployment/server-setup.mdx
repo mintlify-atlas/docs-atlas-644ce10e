@@ -1,0 +1,375 @@
+---
+title: 'Server Setup'
+description: 'Configure and run the Piggo Games multiplayer server'
+---
+
+The Piggo Games server handles WebSocket connections, HTTP API endpoints, lobby management, and user authentication. It's built on Bun runtime with msgpack for efficient network communication.
+
+## Server Architecture
+
+The server consists of two main components:
+
+- **API Server** (`server/src/Api.ts`) - Handles WebSocket upgrades, HTTP endpoints, and request routing
+- **ServerWorld** (`server/src/ServerWorld.ts`) - Manages individual game lobbies with ECS world instances
+
+## Installation
+
+<Steps>
+  <Step title="Install dependencies">
+    From the root directory, install all workspace dependencies:
+
+    ```bash
+    bun install
+    ```
+  </Step>
+
+  <Step title="Generate Prisma client">
+    Generate the database client before starting the server:
+
+    ```bash
+    bun gen
+    ```
+
+    This runs `bun --cwd server prisma:generate` to create the Prisma client from your schema.
+  </Step>
+
+  <Step title="Set up environment variables">
+    Configure the required environment variables (see [Environment Variables](#environment-variables) section below).
+  </Step>
+</Steps>
+
+## Starting the Server
+
+### Development Mode
+
+Run the server with auto-reload on file changes:
+
+```bash
+bun --cwd server dev
+```
+
+This starts the server with a local PostgreSQL connection:
+
+```bash
+DATABASE_URL='postgresql://postgres@localhost:5432/piggo' bun --watch src/Api.ts
+```
+
+### Production Mode
+
+Run database migrations and start the server:
+
+```bash
+bun prod
+```
+
+This executes:
+1. `bun gen` - Generates Prisma client
+2. `bun --cwd server start` - Runs migrations and starts server with `--smol` flag
+
+<Warning>
+  The `--smol` flag reduces memory usage in production. Ensure your database is backed up before running migrations.
+</Warning>
+
+## API Server Configuration
+
+The API server (server/src/Api.ts:268-360) initializes with the following configuration:
+
+```typescript
+api.bun = Bun.serve({
+  hostname: "0.0.0.0",
+  port: env.PORT ?? 3000,
+  fetch: async (r: Request, server: Server) => {
+    // CORS validation
+    let origin = r.headers.get("origin")
+    if (!origin || !ValidOrigins.includes(origin)) {
+      return HttpError(403, "invalid origin", origin ?? "")
+    }
+
+    // WebSocket upgrade
+    return server.upgrade(r, { data: { ip: r.headers.get("x-forwarded-for") } }) ?
+      new Response() :
+      new Response("upgrade failed", { status: 500 })
+  },
+  websocket: {
+    perMessageDeflate: false,
+    close: api.handleClose,
+    open: api.handleOpen,
+    message: api.handleMessage
+  }
+})
+```
+
+### Key Features
+
+- **Port**: Defaults to 3000, configurable via `PORT` environment variable
+- **CORS**: Validates origin headers against `ValidOrigins` whitelist
+- **WebSocket**: Handles upgrade requests with client IP tracking
+- **Message Encoding**: Uses msgpack for binary message serialization
+
+## WebSocket Lifecycle
+
+### Connection Flow
+
+<Steps>
+  <Step title="Client connects">
+    When a client connects (server/src/Api.ts:397-408):
+
+    ```typescript
+    handleOpen: (ws: ServerWebSocket<PerClientData>) => {
+      // Set data for this client
+      ws.data = { 
+        id: api.clientIncr, 
+        worldId: "", 
+        playerName: "noob", 
+        playerId: "", 
+        ip: ws.data.ip 
+      }
+
+      console.log("client connected", ws.data.ip)
+
+      // Add client to clients
+      api.clients[ws.data.id] = ws
+
+      // Increment id
+      api.clientIncr += 1
+    }
+    ```
+
+    Each client receives:
+    - Unique numeric ID
+    - IP address (from `x-forwarded-for` header)
+    - Default player name "noob"
+  </Step>
+
+  <Step title="Client sends requests">
+    Messages are decoded from msgpack and routed to handlers (server/src/Api.ts:409-434):
+
+    ```typescript
+    handleMessage: (ws: ServerWebSocket<PerClientData>, data: Buffer) => {
+      const wsData = decode(data) as NetMessageTypes
+      
+      if (wsData.type === "request") {
+        const handler = api.handlers[wsData.data.route]
+        
+        handler({ ws, data: wsData.data }).then((data) => {
+          const responseData: ResponseData = { type: "response", data }
+          ws.send(encode(responseData))
+        })
+      }
+      
+      // Forward game messages to ServerWorld
+      const world = api.worlds[ws.data.worldId]
+      if (world) world.handleMessage(ws, wsData)
+    }
+    ```
+  </Step>
+
+  <Step title="Client disconnects">
+    On disconnect (server/src/Api.ts:389-396):
+
+    ```typescript
+    handleClose: (ws: ServerWebSocket<PerClientData>) => {
+      const world = api.worlds[ws.data.worldId]
+      if (world) world.handleClose(ws)
+
+      console.log("client disconnected", ws.data.ip)
+
+      delete api.clients[ws.data.id]
+    }
+    ```
+
+    This removes the player entity from their world and cleans up client state.
+  </Step>
+</Steps>
+
+## Request Handlers
+
+The server supports multiple request routes (server/src/Api.ts:66-266):
+
+<CodeGroup>
+```typescript Lobby Management
+"lobby/list": async ({ data }) => {
+  const lobbies = {}
+  for (const [id, world] of entries(api.worlds)) {
+    if (world.numClients() === 0) continue
+    lobbies[id] = {
+      id,
+      players: keys(world.clients).length,
+      creator: world.creator.data.playerName ?? "noob",
+      game: world.world.game.id
+    }
+  }
+  return { id: data.id, lobbies }
+}
+
+"lobby/create": async ({ ws, data }) => {
+  const lobbyId = data.lobbyId || randomHash()
+  
+  if (!api.worlds[lobbyId]) {
+    api.worlds[lobbyId] = ServerWorld({ creator: ws })
+  }
+  
+  ws.data.worldId = lobbyId
+  return { id: data.id, lobbyId }
+}
+```
+
+```typescript Authentication
+"auth/login": async ({ ws, data }) => {
+  // Verify Google JWT
+  const ticket = await google.verifyIdToken({
+    idToken: data.jwt,
+    audience: "1064669120093-..."
+  })
+
+  const { sub } = ticket.getPayload() ?? {}
+  if (!sub) return { id: data.id, error: "google Auth failed" }
+
+  // Find or create user
+  let user = await prisma.users.findUnique({ 
+    where: { googleId: sub } 
+  })
+  
+  // Create session token
+  const token = jwt.sign({ googleId: sub }, JWT_SECRET, { 
+    expiresIn: "8h" 
+  })
+
+  return { id: data.id, token, newUser: !user }
+}
+```
+
+```typescript Player Stats
+"meta/players": async ({ data }) => {
+  return { 
+    id: data.id, 
+    online: keys(api.clients).length 
+  }
+}
+```
+</CodeGroup>
+
+## ServerWorld Instance
+
+Each lobby runs its own `ServerWorld` instance (server/src/ServerWorld.ts:23-96):
+
+```typescript
+export const ServerWorld = ({ clients = {}, creator }: ServerWorldProps) => {
+  const world = DefaultWorld({ mode: "server" })
+  const latestClientMessages: Record<string, GameData[]> = {}
+  const latestClientLag: Record<string, number> = {}
+  
+  world.addSystems([NetServerSystem({
+    world, clients, latestClientMessages, latestClientLag 
+  })])
+  
+  return {
+    world,
+    clients,
+    creator,
+    numClients: () => keys(clients).length,
+    handleClose: (ws: WS) => {
+      world.removeEntity(ws.data.playerId)
+      delete clients[ws.data.playerId]
+    },
+    handleMessage: (ws: WS, msg: NetMessageTypes) => {
+      if (!world.entities[msg.playerId]) {
+        const leader = world.players().length === 0
+        world.addEntity(Player({ 
+          id: msg.playerId, 
+          name: ws.data.playerName, 
+          leader 
+        }))
+        clients[msg.playerId] = ws
+      }
+      latestClientMessages[msg.playerId].push(msg)
+    }
+  }
+}
+```
+
+### Features
+
+- **ECS World**: Each lobby runs a full `DefaultWorld` instance in server mode
+- **Netcode**: `NetServerSystem` handles synchronization and broadcasts
+- **Latency Tracking**: Records client lag and tick differences
+- **Auto-cleanup**: Empty worlds are removed every 2 seconds (server/src/Api.ts:441-449)
+
+## Environment Variables
+
+Configure these environment variables before starting the server:
+
+<ParamField path="DATABASE_URL" type="string" required>
+  PostgreSQL connection string
+
+  ```bash
+  DATABASE_URL="postgresql://user:password@host:5432/dbname"
+  ```
+</ParamField>
+
+<ParamField path="JWT_SECRET" type="string" required>
+  Secret key for signing session tokens (server/src/Api.ts:43)
+
+  ```bash
+  JWT_SECRET="your-secret-key-here"
+  ```
+
+  <Warning>
+    Use a strong, random secret in production. Defaults to "piggo" in development.
+  </Warning>
+</ParamField>
+
+<ParamField path="DISCORD_SECRET" type="string">
+  Discord OAuth2 client secret for Discord login (server/src/Api.ts:44)
+
+  ```bash
+  DISCORD_SECRET="your-discord-oauth-secret"
+  ```
+</ParamField>
+
+<ParamField path="PORT" type="number" default="3000">
+  Server port (server/src/Api.ts:270)
+
+  ```bash
+  PORT=3000
+  ```
+</ParamField>
+
+<ParamField path="NODE_ENV" type="string">
+  Environment mode. Set to `"staging"` to enable HTTP documentation server on port 8000 (server/src/Api.ts:362)
+
+  ```bash
+  NODE_ENV="staging"
+  ```
+</ParamField>
+
+## Monitoring
+
+The server logs connection events and request/response pairs:
+
+```bash
+包 http://0.0.0.0:3000/
+client connected 192.168.1.1
+<< noob {"route":"lobby/create"}
+>> noob {"route":"lobby/create","lobbyId":"abc123"} ms:2.5
+id:player1 name:noob connected 192.168.1.1
+diff:0 lag:45ms player:player1 name:noob
+```
+
+### Performance Metrics
+
+- Request/response timing in milliseconds
+- Client tick difference (client ahead/behind server)
+- Network lag per client
+- Active player count per lobby
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Database Setup" icon="database" href="/deployment/database">
+    Configure Prisma and run migrations
+  </Card>
+  <Card title="Production Deploy" icon="rocket" href="/deployment/production">
+    Deploy with Docker and environment config
+  </Card>
+</CardGroup>

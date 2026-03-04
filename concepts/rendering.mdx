@@ -1,0 +1,521 @@
+---
+title: Rendering
+description: Rendering entities with Pixi.js and Three.js
+---
+
+## Dual Renderer Architecture
+
+Piggo supports **two rendering engines** that can be swapped per-game:
+
+<CardGroup cols={2}>
+  <Card title="Pixi.js (2D)" icon="image">
+    WebGL-accelerated 2D rendering
+    - Sprites and sprite sheets
+    - Top-down and side-scroller games
+    - Better mobile performance
+    - Simpler implementation
+  </Card>
+  
+  <Card title="Three.js (3D)" icon="cube">
+    Full 3D rendering pipeline
+    - 3D models (FBX, GLTF)
+    - First/third-person games
+    - Advanced lighting and shadows
+    - Particle effects
+  </Card>
+</CardGroup>
+
+## Pixi Renderer
+
+### Initialization
+
+```typescript
+// From: core/src/graphics/PixiRenderer.ts:24
+export const PixiRenderer = (): PixiRenderer => {
+  let app = new Application()
+  
+  const renderer: PixiRenderer = {
+    app,
+    canvas: undefined,
+    camera: PixiCamera(app),
+    ready: false,
+    
+    activate: async (world: World) => {
+      renderer.canvas = replaceCanvas()
+      
+      await app.init({
+        canvas: renderer.canvas,
+        resolution: window.devicePixelRatio,
+        antialias: true,
+        backgroundColor: 0x000000,
+        preference: "webgl",
+        preferWebGLVersion: 2
+      })
+      
+      // Set up camera
+      app.stage.addChild(renderer.camera.root)
+      
+      // Schedule onRender
+      app.ticker.add(world.onRender)
+      
+      renderer.ready = true
+    }
+  }
+  return renderer
+}
+```
+
+### Renderable Component
+
+Entities gain visual representation via the `Renderable` component:
+
+```typescript
+const sprite = Entity({
+  id: "player",
+  components: {
+    position: Position({ x: 100, y: 100 }),
+    renderable: Renderable({
+      zIndex: 1,
+      rotates: true,  // Auto-rotate with position.rotation
+      interpolate: true,  // Smooth movement between ticks
+      
+      setContainer: async () => {
+        // Create Pixi container
+        const sprite = await loadSprite("player.png")
+        sprite.anchor.set(0.5, 0.5)
+        return sprite
+      },
+      
+      onTick: ({ container, entity, world }) => {
+        // Update sprite each tick
+        const { health } = entity.components
+        if (health.data.current < health.data.max / 2) {
+          container.tint = 0xff0000  // Red when low health
+        }
+      },
+      
+      onRender: ({ container, delta, since }) => {
+        // Update at 60fps
+        container.alpha = Math.sin(performance.now() * 0.001) * 0.5 + 0.5
+      }
+    })
+  }
+})
+```
+
+### Pixi Render System
+
+The `PixiRenderSystem` processes renderable entities:
+
+```typescript
+// From: core/src/graphics/PixiRenderer.ts:119
+export const PixiRenderSystem = ClientSystemBuilder({
+  id: "PixiRenderSystem",
+  init: (world) => ({
+    id: "PixiRenderSystem",
+    query: ["renderable", "position"],
+    priority: 11,
+    
+    onTick: (entities: Entity<Renderable | Position>[]) => {
+      for (const entity of entities) {
+        const { position, renderable } = entity.components
+        
+        // Render if new entity
+        if (!renderable.rendered) {
+          await renderable._init(world.pixi, world)
+          position.screenFixed ? pixi?.addGui(renderable) : pixi?.addWorld(renderable)
+          renderable.rendered = true
+        }
+        
+        // Run dynamic callback
+        renderable.onTick?.({ container: renderable.c, entity, world })
+        
+        // Update position
+        const { x, y } = {
+          x: renderable.position.x + position.data.x,
+          y: renderable.position.y + position.data.y
+        }
+        renderable.c.position.set(x, y - position.data.z)
+        
+        // Update rotation
+        if (renderable.rotates) {
+          renderable.c.rotation = position.data.rotation
+        }
+      }
+      
+      // Sort by y-position for depth
+      entities.sort((a, b) => a.components.position.data.y - b.components.position.data.y)
+      for (const [index, entity] of entities.entries()) {
+        entity.components.renderable.c.zIndex = entity.components.renderable.zIndex + 0.0001 * index
+      }
+    },
+    
+    onRender(entities: Entity<Renderable | Position>[], delta, since) {
+      for (const entity of entities) {
+        const { position, renderable } = entity.components
+        
+        renderable.onRender?.({ container: renderable.c, entity, world, delta, since })
+        
+        // Interpolate position
+        if (renderable.interpolate) {
+          const interpolated = position.interpolate(world, delta)
+          renderable.c.position.set(
+            renderable.position.x + interpolated.x,
+            renderable.position.y + interpolated.y - interpolated.z
+          )
+        }
+      }
+    }
+  })
+})
+```
+
+<Note>
+**onTick** runs at 40 FPS (game logic), **onRender** runs at 60+ FPS (smooth visuals).
+</Note>
+
+### Sprite Animations
+
+Use animated sprites with multiple orientations:
+
+```typescript
+renderable: Renderable({
+  setContainer: async () => {
+    const container = new Container()
+    return container
+  },
+  animations: {
+    "r": await loadAnimation("walk_right"),
+    "l": await loadAnimation("walk_left"),
+    "u": await loadAnimation("walk_up"),
+    "d": await loadAnimation("walk_down")
+  },
+  animationSelect: (entity, world) => {
+    return entity.components.position.orientation  // "r", "l", "u", "d"
+  }
+})
+```
+
+### Camera Control
+
+```typescript
+import { PixiCameraSystem } from "@piggo-gg/core"
+
+systems: [
+  PixiCameraSystem({
+    follow: (world) => {
+      const player = world.client?.character()
+      return player?.components.position.xyz() ?? { x: 0, y: 0, z: 0 }
+    },
+    resize: () => {
+      const { w, h } = screenWH()
+      return Math.max(2, Math.min(4, w / 500))  // Dynamic zoom
+    }
+  })
+]
+```
+
+## Three.js Renderer
+
+### Initialization
+
+```typescript
+// From: core/src/graphics/ThreeRenderer.ts:38
+export const ThreeRenderer = (): ThreeRenderer => {
+  let webgl: WebGLRenderer | undefined
+  
+  const renderer: ThreeRenderer = {
+    canvas: undefined,
+    camera: ThreeCamera(),
+    scene: new Scene(),
+    ready: false,
+    fLoader: new FBXLoader(),
+    gLoader: new GLTFLoader(),
+    tLoader: new TextureLoader(),
+    particles: [],
+    
+    activate: async (world: World) => {
+      renderer.canvas = replaceCanvas()
+      
+      webgl = new WebGLRenderer({
+        antialias: true,
+        canvas: renderer.canvas,
+        powerPreference: "high-performance",
+        precision: "highp"
+      })
+      
+      webgl.setPixelRatio(window.devicePixelRatio)
+      webgl.shadowMap.enabled = true
+      
+      webgl.setAnimationLoop(() => {
+        world.onRender()
+        webgl?.render(renderer.scene, renderer.camera.c)
+      })
+      
+      renderer.ready = true
+      renderer.resize()
+    }
+  }
+  return renderer
+}
+```
+
+### Three Component
+
+Use the `Three` component for 3D meshes:
+
+```typescript
+const player = Entity({
+  id: "player",
+  components: {
+    position: Position({ x: 0, y: 0, z: 0 }),
+    three: Three({
+      init: async ({ fLoader, scene }) => {
+        // Load 3D model
+        const model = await fLoader.loadAsync("/models/player.fbx")
+        model.scale.set(0.01, 0.01, 0.01)
+        model.castShadow = true
+        scene.add(model)
+        
+        return {
+          mesh: model,
+          update: ({ position }) => {
+            model.position.set(position.data.x, position.data.z, position.data.y)
+            model.rotation.y = position.data.rotation
+          },
+          cleanup: () => {
+            scene.remove(model)
+            model.traverse((child) => {
+              if (child.geometry) child.geometry.dispose()
+              if (child.material) child.material.dispose()
+            })
+          }
+        }
+      }
+    })
+  }
+})
+```
+
+### Camera Modes
+
+<CodeGroup>
+```typescript First Person
+import { ThreeCameraSystem } from "@piggo-gg/core"
+
+systems: [
+  ThreeCameraSystem({
+    mode: "first",
+    follow: (world) => {
+      const char = world.client?.character()
+      return char?.components.position.xyz()
+    }
+  })
+]
+```
+
+```typescript Third Person
+systems: [
+  ThreeCameraSystem({
+    mode: "third",
+    distance: 5,  // Distance behind player
+    height: 2,    // Height above player
+    follow: (world) => {
+      const char = world.client?.character()
+      return char?.components.position.xyz()
+    }
+  })
+]
+```
+</CodeGroup>
+
+### Particle System
+
+```typescript
+// From: core/src/graphics/ThreeRenderer.ts:66
+spawnParticles: (pos: XYZ, world: World, type: "water" | "blast" | "blood" = "blast") => {
+  for (let i = 0; i < 20; i++) {
+    const mesh = particleMesh.clone()
+    mesh.position.set(pos.x, pos.z, pos.y)
+    
+    const color = randomColor()
+    mesh.material = new MeshPhongMaterial({ color, emissive: color })
+    
+    world.three?.particles.push({
+      mesh,
+      tick: world.tick,
+      velocity: randomVector3(0.03),
+      pos: { ...pos },
+      duration: 9,
+      gravity: 0.0024
+    })
+    
+    world.three?.scene.add(mesh)
+  }
+}
+
+// Usage:
+world.three?.spawnParticles({ x: 100, y: 50, z: 0 }, world, "blast")
+```
+
+## Screen-Fixed UI
+
+Both renderers support screen-fixed elements:
+
+```typescript
+const healthBar = Entity({
+  id: "health-bar",
+  components: {
+    position: Position({
+      x: 20,      // 20px from left
+      y: -20,     // 20px from bottom (negative = from bottom)
+      screenFixed: true
+    }),
+    renderable: Renderable({
+      setContainer: async () => {
+        const graphics = new Graphics()
+        graphics.rect(0, 0, 200, 20).fill(0x00ff00)
+        return graphics
+      },
+      onTick: ({ container, world }) => {
+        const player = world.client?.character()
+        if (player?.components.health) {
+          const pct = player.components.health.data.current / player.components.health.data.max
+          container.width = 200 * pct
+        }
+      }
+    })
+  }
+})
+```
+
+<Tip>
+Screen-fixed elements automatically adjust position on window resize.
+</Tip>
+
+## Rendering Layers
+
+Control draw order with `zIndex`:
+
+```typescript
+entities: [
+  Background({ zIndex: 0 }),     // Bottom
+  Court({ zIndex: 1 }),
+  Ball({ zIndex: 2 }),
+  Players({ zIndex: 3 }),
+  UI({ zIndex: 10 })             // Top
+]
+```
+
+Within the same zIndex, entities are sorted by y-position for depth:
+
+```typescript
+// From: core/src/graphics/PixiRenderer.ts:255
+entities.sort((a, b) => a.components.position.data.y - b.components.position.data.y)
+for (const [index, entity] of entities.entries()) {
+  entity.components.renderable.c.zIndex = entity.components.renderable.zIndex + 0.0001 * index
+}
+```
+
+## Visual Effects
+
+### Glow Effect (Pixi)
+
+```typescript
+renderable.setGlow({
+  color: 0xffffff,
+  outerStrength: 3
+})
+
+// Remove glow
+renderable.setGlow()
+```
+
+### Color Overlay (Pixi)
+
+```typescript
+import { ColorOverlayFilter } from "pixi-filters"
+
+renderable.filters["overlay"] = new ColorOverlayFilter(0xff0000, 0.5)
+
+// Auto-fades out in onRender
+```
+
+### Shadows (Three.js)
+
+```typescript
+mesh.castShadow = true
+mesh.receiveShadow = true
+
+// Add light
+const light = new DirectionalLight(0xffffff, 1)
+light.castShadow = true
+scene.add(light)
+```
+
+## Performance Tips
+
+<AccordionGroup>
+  <Accordion title="Reuse geometries and materials">
+    ```typescript
+    // Bad: Creates new geometry each time
+    const mesh = new Mesh(new BoxGeometry(1, 1, 1), new MeshBasicMaterial())
+    
+    // Good: Reuse
+    const geometry = new BoxGeometry(1, 1, 1)
+    const material = new MeshBasicMaterial()
+    const mesh = new Mesh(geometry, material)
+    ```
+  </Accordion>
+  
+  <Accordion title="Use texture atlases (Pixi)">
+    Combine multiple sprites into one texture to reduce draw calls.
+  </Accordion>
+  
+  <Accordion title="Implement cleanup">
+    ```typescript
+    three: Three({
+      cleanup: () => {
+        scene.remove(mesh)
+        mesh.geometry.dispose()
+        mesh.material.dispose()
+      }
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="Limit particle count">
+    ```typescript
+    if (world.three.particles.length > 500) {
+      // Don't spawn more particles
+      return
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Debug Rendering
+
+Enable debug mode to see entity bounds, velocities, etc:
+
+```typescript
+// Press / and type "debug"
+world.debug = true
+
+// Or programmatically
+systems: [PixiDebugSystem]  // Draws bounds, positions, velocities
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Physics" icon="atom" href="/concepts/physics">
+    Add collision detection
+  </Card>
+  <Card title="Games" icon="gamepad" href="/concepts/games">
+    Build a complete game
+  </Card>
+  <Card title="Netcode" icon="network-wired" href="/concepts/netcode">
+    Sync rendering across clients
+  </Card>
+</CardGroup>

@@ -1,0 +1,397 @@
+---
+title: PixiRenderer
+description: Pixi.js-based 2D renderer for multiplayer games with WebGL, sprite animation, camera controls, and UI layers
+---
+
+## Overview
+
+The `PixiRenderer` provides a complete Pixi.js rendering system optimized for 2D multiplayer browser games. It manages sprite rendering, animation systems, camera controls, GUI layers, and visual effects with high performance WebGL acceleration.
+
+## Initialization
+
+### Basic Setup
+
+```typescript
+import { PixiRenderer } from "@piggo-gg/core"
+
+const renderer = PixiRenderer()
+
+// Activate renderer with world context
+await renderer.activate(world)
+```
+
+### Configuration in GameBuilder
+
+```typescript island/Island.ts
+export const Island: GameBuilder<IslandState, IslandSettings> = {
+  id: "island",
+  init: (world) => ({
+    renderer: "pixi",
+    netcode: "rollback",
+    systems: [
+      PixiRenderSystem,
+      PixiCameraSystem({
+        follow: () => ({ x: 0, y: -10, z: 0 }),
+        resize: () => {
+          const { w } = screenWH()
+          return min(3.4, w / (beach.width * 1.2))
+        }
+      }),
+      PixiDebugSystem,
+      ShadowSystem
+    ],
+    entities: [
+      Background({ rays: true }),
+      Beach(beach),
+      Water2D(),
+      Cursor()
+    ]
+  })
+}
+```
+
+## Type Definition
+
+<ParamField path="app" type="Application">
+  Pixi.js application instance managing the WebGL renderer
+</ParamField>
+
+<ParamField path="canvas" type="HTMLCanvasElement | undefined">
+  WebGL rendering canvas element
+</ParamField>
+
+<ParamField path="camera" type="PixiCamera">
+  Camera controller for world space and viewport management
+</ParamField>
+
+<ParamField path="guiRenderables" type="Renderable[]">
+  Screen-fixed UI elements rendered in screen space
+</ParamField>
+
+<ParamField path="ready" type="boolean">
+  Whether renderer is initialized and ready to render
+</ParamField>
+
+<ParamField path="resizedFlag" type="boolean">
+  Set to true when viewport resizes, triggers GUI re-layout
+</ParamField>
+
+## Methods
+
+### activate
+
+Initializes the Pixi.js application, creates the canvas, sets up the camera, and starts the render loop.
+
+```typescript
+await renderer.activate(world)
+```
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+**Returns:** `Promise<void>`
+
+**Configuration:**
+- Creates Pixi Application with WebGL 2 preference
+- Sets resolution to `window.devicePixelRatio`
+- Enables antialiasing and auto density
+- Default background color: `0x000000` (black)
+- Adds camera root to stage
+- Registers resize, fullscreen, and orientation handlers
+- Schedules `world.onRender()` via ticker
+
+### deactivate
+
+Cleans up renderer resources and disposes of the Pixi application.
+
+```typescript
+renderer.deactivate()
+```
+
+**Actions:**
+- Destroys application without removing canvas
+- Cleans up children, textures, context, styles, and texture sources
+- Sets `ready` to `false`
+
+### handleResize
+
+Updates renderer dimensions when window resizes.
+
+```typescript
+renderer.handleResize()
+```
+
+**Behavior:**
+- Gets current screen dimensions
+- Resizes Pixi renderer
+- Sets `resizedFlag` to trigger GUI re-layout
+
+### addGui
+
+Adds a screen-fixed UI element to the stage.
+
+```typescript
+const healthBar = Renderable({ /* ... */ })
+renderer.addGui(healthBar)
+```
+
+<ParamField path="renderable" type="Renderable" required>
+  UI element to render in screen space
+</ParamField>
+
+**Behavior:**
+- Adds to stage (not camera root)
+- Tracks in `guiRenderables` array
+- Position uses screen coordinates, not world coordinates
+
+### addWorld
+
+Adds a world-space entity to the camera's scene.
+
+```typescript
+const character = Renderable({ /* ... */ })
+renderer.addWorld(character)
+```
+
+<ParamField path="renderable" type="Renderable" required>
+  World entity to render in camera space
+</ParamField>
+
+**Behavior:**
+- Adds to camera root (transforms with camera)
+- Position affected by camera zoom and pan
+- Automatically culled when off-screen (if `cullable: true`)
+
+### setBgColor
+
+Changes the background color of the renderer.
+
+```typescript
+renderer.setBgColor(0x1a1a2e)
+```
+
+<ParamField path="color" type="number" required>
+  Hex color value (e.g., `0xff0000` for red)
+</ParamField>
+
+### wh
+
+Returns the current screen dimensions.
+
+```typescript
+const { width, height } = renderer.wh()
+// width: 1920, height: 1080
+```
+
+**Returns:** `{ width: number, height: number }`
+
+## Pixi Render System
+
+The `PixiRenderSystem` manages the rendering pipeline for all Pixi entities.
+
+```typescript
+import { PixiRenderSystem } from "@piggo-gg/core"
+
+systems: [
+  PixiRenderSystem
+]
+```
+
+### Rendering Pipeline
+
+**onTick:**
+1. Initializes new renderables (calls `_init` and `setup`)
+2. Adds to GUI or world layer based on `position.screenFixed`
+3. Executes renderable `onTick` callbacks
+4. Updates rotation if `rotates: true`
+5. Updates position (with z-offset for pseudo-3D)
+6. Updates tint color
+7. Handles sprite sheet animations
+8. Sorts entities by y-position (painter's algorithm)
+9. Assigns z-index for proper layering
+10. Updates screen-fixed positions
+
+**onRender:**
+1. Executes renderable `onRender` callbacks
+2. Decays color overlay filters
+3. Interpolates positions for smooth movement
+4. Updates screen-fixed UI positions
+
+### Animation System
+
+Sprite sheet animations with automatic frame updates:
+
+```typescript
+renderable: Renderable({
+  animations: {
+    walk: animatedSprite1,
+    idle: animatedSprite2
+  },
+  animationSelect: (entity, world) => {
+    const { velocity } = entity.components.position.data
+    return (velocity.x || velocity.y) ? "walk" : "idle"
+  }
+})
+```
+
+**Features:**
+- Buffers animation changes to prevent flicker
+- Automatically removes old animation
+- Plays new animation from frame 0
+- Tracks active animation state
+
+## Pixi Debug System
+
+Visual debugging overlay for development.
+
+```typescript
+import { PixiDebugSystem } from "@piggo-gg/core"
+
+systems: [
+  PixiDebugSystem
+]
+```
+
+**Features when `world.debug` is enabled:**
+- Position coordinates and velocity display
+- Bounding box visualization
+- Heading direction lines
+- Position origin markers
+- Physics collider wireframes
+
+**Toggle debug mode:**
+```typescript
+world.debug = true
+```
+
+## Screen-Fixed UI
+
+UI elements that stay fixed on screen:
+
+```typescript
+const healthBar = Entity<Position | Renderable>({
+  id: "health-bar",
+  components: {
+    position: Position({
+      screenFixed: true,
+      data: { x: 20, y: -20, z: 0 } // negative = from right/bottom
+    }),
+    renderable: Renderable({
+      setup: async (r) => {
+        const bar = pixiRect({ x: 0, y: 0, w: 100, h: 20 })
+          .fill(0xff0000)
+        r.c.addChild(bar)
+      }
+    })
+  }
+})
+```
+
+**Coordinate system:**
+- Positive x/y: offset from top-left
+- Negative x/y: offset from bottom-right
+- Updated automatically on resize
+
+## Integration with World
+
+Access the renderer through the world instance:
+
+```typescript
+if (world.pixi?.ready) {
+  // Renderer is active
+  world.pixi.setBgColor(0x1a1a2e)
+  world.pixi.camera.scaleTo(2.5)
+  world.pixi.addGui(uiElement)
+}
+```
+
+## Performance Optimizations
+
+- **WebGL 2:** Preferred graphics API for modern browsers
+- **Sprite batching:** Automatically batches similar sprites
+- **Culling:** Off-screen entities not rendered (when `cullable: true`)
+- **Z-index sorting:** Efficient painter's algorithm
+- **Container pooling:** Reuses containers on resize
+- **Texture management:** Automatic texture cleanup on destroy
+
+## Common Patterns
+
+### Creating Animated Sprites
+
+```typescript island/Ian.ts
+import { Entity, Position, Renderable, spritesheet } from "@piggo-gg/core"
+
+export const Ian = () => {
+  const animations = spritesheet("ian.png", 16, 16, {
+    walk: [0, 1, 2, 3],
+    idle: [4]
+  })
+
+  return Entity<Position | Renderable>({
+    id: "ian",
+    components: {
+      position: Position({ x: 0, y: 0, z: 0 }),
+      renderable: Renderable({
+        animations,
+        rotates: false,
+        interpolate: true,
+        animationSelect: (entity) => {
+          const { velocity } = entity.components.position.data
+          return (velocity.x || velocity.y) ? "walk" : "idle"
+        }
+      })
+    }
+  })
+}
+```
+
+### Creating Custom Graphics
+
+```typescript
+import { pixiRect, Renderable } from "@piggo-gg/core"
+
+const box = Renderable({
+  setup: async (r) => {
+    const rect = pixiRect({ x: 0, y: 0, w: 50, h: 50 })
+      .fill({ color: 0x3498db, alpha: 0.8 })
+      .stroke({ color: 0x2980b9, width: 2 })
+    r.c.addChild(rect)
+  },
+  onTick: ({ renderable }) => {
+    // Update graphics each tick
+  }
+})
+```
+
+### Dynamic Tinting
+
+```typescript
+renderable: Renderable({
+  onTick: ({ renderable, entity }) => {
+    const health = entity.components.health?.data.current || 0
+    const maxHealth = entity.components.health?.data.max || 100
+    
+    if (health < maxHealth * 0.3) {
+      renderable.color = 0xff0000 // Red when low health
+    } else {
+      renderable.color = 0xffffff // White normally
+    }
+  }
+})
+```
+
+### Color Overlay Effects
+
+```typescript
+import { ColorOverlayFilter } from "pixi-filters"
+
+renderable.filters["overlay"] = new ColorOverlayFilter(0xff0000, 0.5)
+// Automatically decays in PixiRenderSystem
+```
+
+## See Also
+
+- [PixiCamera](/api/graphics/cameras#pixicamera) - Camera controls for 2D games
+- [Renderable](/api/components/renderable) - Renderable component API
+- [PixiRenderSystem](/api/systems/rendering#pixirendersystem) - Rendering system details

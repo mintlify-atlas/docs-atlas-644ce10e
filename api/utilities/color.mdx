@@ -1,0 +1,255 @@
+---
+title: Color Utilities
+description: Color manipulation and preset colors for Piggo Games
+---
+
+Color utilities provide common color presets and interpolation functions using Three.js Color objects.
+
+## Color Presets
+
+### colors
+
+```typescript
+const colors = {
+  piggo: 0xffc0cb,
+  gold: 0xffee55,
+  evening: 0xffd9c3,
+  night: 0x9999cc,
+  threeEvening: new Color(0xffd9c3),
+  threeNight: new Color(0x9999cc)
+}
+```
+
+Predefined color constants used throughout Piggo Games.
+
+<ParamField path="piggo" type="number">
+  Signature Piggo pink color (0xffc0cb)
+</ParamField>
+
+<ParamField path="gold" type="number">
+  Gold/yellow color (0xffee55)
+</ParamField>
+
+<ParamField path="evening" type="number">
+  Warm evening/sunset color (0xffd9c3)
+</ParamField>
+
+<ParamField path="night" type="number">
+  Cool night/moonlight color (0x9999cc)
+</ParamField>
+
+<ParamField path="threeEvening" type="Color">
+  Three.js Color instance for evening
+</ParamField>
+
+<ParamField path="threeNight" type="Color">
+  Three.js Color instance for night
+</ParamField>
+
+## Color Functions
+
+### lerp
+
+```typescript
+lerp(a: Color, b: Color, t: number): Color
+```
+
+Linear interpolation between two colors.
+
+<ParamField path="a" type="Color" required>
+  Starting color (Three.js Color)
+</ParamField>
+
+<ParamField path="b" type="Color" required>
+  Ending color (Three.js Color)
+</ParamField>
+
+<ParamField path="t" type="number" required>
+  Interpolation factor (0-1). 0 returns color a, 1 returns color b
+</ParamField>
+
+```typescript
+import { lerp, colors } from "@piggo-gg/core"
+import { Color } from "three"
+
+// Interpolate between evening and night colors
+const twilight = lerp(colors.threeEvening, colors.threeNight, 0.5)
+
+// Animate color transition
+const t = (tick % 100) / 100 // 0 to 1 over 100 ticks
+const currentColor = lerp(startColor, endColor, t)
+```
+
+### randomColorBG
+
+```typescript
+randomColorBG(): Color
+```
+
+Generates a random blue-green color with red=0, random green (0-255), and blue=255.
+
+```typescript
+const oceanColor = randomColorBG()
+// Returns colors like rgb(0, 123, 255)
+```
+
+### randomColorRY
+
+```typescript
+randomColorRY(): Color
+```
+
+Generates a random red-yellow color with red=255, random green (0-255), and blue=0.
+
+```typescript
+const fireColor = randomColorRY()
+// Returns colors like rgb(255, 180, 0)
+```
+
+## Usage Examples
+
+### Day/Night Cycle
+
+```typescript
+import { lerp, colors, dayness } from "@piggo-gg/core"
+
+// In your render system
+onRender: ({ world, delta }) => {
+  const dayAmount = dayness(world.tick, delta)
+  
+  // Interpolate ambient light color
+  const ambientColor = lerp(
+    colors.threeNight,
+    colors.threeEvening,
+    dayAmount
+  )
+  
+  world.three.ambientLight.color = ambientColor
+}
+```
+
+### Color Transitions
+
+```typescript
+import { lerp } from "@piggo-gg/core"
+import { Color } from "three"
+
+// Health bar color (green to red)
+const healthColor = lerp(
+  new Color(0xff0000), // Red (low health)
+  new Color(0x00ff00), // Green (full health)
+  entity.components.health.data.hp / entity.components.health.data.maxHp
+)
+
+material.color = healthColor
+```
+
+### Random Particle Effects
+
+```typescript
+import { randomColorRY, randomColorBG } from "@piggo-gg/core"
+
+// Fire particles
+for (let i = 0; i < 10; i++) {
+  createParticle({
+    color: randomColorRY(), // Orange/yellow flames
+    velocity: { x: randomLR(1), y: 2, z: randomLR(1) }
+  })
+}
+
+// Water splash particles
+for (let i = 0; i < 10; i++) {
+  createParticle({
+    color: randomColorBG(), // Blue/teal water
+    velocity: { x: randomLR(2), y: 3, z: randomLR(2) }
+  })
+}
+```
+
+### Material Color Animation
+
+```typescript
+import { lerp, colors } from "@piggo-gg/core"
+import { MeshPhongMaterial } from "three"
+
+const material = new MeshPhongMaterial()
+let animTime = 0
+
+// Animate material color over time
+onTick: () => {
+  animTime += 0.01
+  const t = (Math.sin(animTime) + 1) / 2 // Oscillate 0-1
+  
+  material.color = lerp(
+    colors.threeEvening,
+    new Color(colors.gold),
+    t
+  )
+}
+```
+
+### UI Color States
+
+```typescript
+import { lerp } from "@piggo-gg/core"
+import { Color } from "three"
+
+const normalColor = new Color(0xcccccc)
+const hoverColor = new Color(0xffffff)
+const clickColor = new Color(colors.piggo)
+
+let buttonColor = normalColor.clone()
+
+// Hover transition
+button.onpointerenter = () => {
+  buttonColor = lerp(buttonColor, hoverColor, 0.3)
+}
+
+button.onpointerleave = () => {
+  buttonColor = lerp(buttonColor, normalColor, 0.3)
+}
+
+button.onpointerdown = () => {
+  buttonColor = clickColor.clone()
+}
+```
+
+### Team Colors
+
+```typescript
+import { colors } from "@piggo-gg/core"
+import { Color } from "three"
+
+const teamColors = {
+  1: new Color(0x5eb1ff), // Blue team
+  2: new Color(0xff6b6b), // Red team
+  spectator: new Color(0xcccccc)
+}
+
+const playerColor = teamColors[player.components.team.data.team]
+material.color = playerColor
+```
+
+## Integration with Three.js
+
+All color utilities work seamlessly with Three.js materials and lighting:
+
+```typescript
+import { lerp, colors } from "@piggo-gg/core"
+import { MeshPhongMaterial, PointLight } from "three"
+
+// Material colors
+const material = new MeshPhongMaterial({
+  color: colors.piggo,
+  emissive: new Color(colors.evening)
+})
+
+// Dynamic lighting
+const light = new PointLight(colors.gold, 1, 100)
+const targetColor = lerp(
+  light.color,
+  colors.threeNight,
+  0.1
+)
+light.color = targetColor
+```

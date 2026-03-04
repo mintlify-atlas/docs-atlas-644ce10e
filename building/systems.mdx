@@ -1,0 +1,500 @@
+---
+title: Systems
+description: Build game logic with Systems that operate on entities and components
+---
+
+## Overview
+
+Systems are functions that run every tick to implement game logic. They query entities with specific components and perform operations on them. Systems are the "behavior" in Piggo's ECS architecture, while components are the "data".
+
+## System Structure
+
+A system consists of:
+- An `id` - Unique identifier
+- A `query` - List of required components
+- A `priority` - Execution order (lower runs first)
+- An `onTick` - Function that runs every game tick
+- Optional `onRender`, `onTickEnd`, `onRollback` hooks
+
+```typescript
+export interface System {
+  id: string
+  query: ValidComponents[]
+  priority: number
+  onTick?: (entities: Entity[], isRollback: boolean) => void
+  onTickEnd?: () => void
+  onRender?: (entities: Entity[], deltaMS: number, since: number) => void
+  onRollback?: () => void
+  skipOnRollback?: boolean
+}
+```
+
+## Creating Systems
+
+<Steps>
+  <Step title="Basic system pattern">
+    Use `SystemBuilder` to create systems:
+
+    ```typescript
+    import { SystemBuilder } from "@piggo-gg/core"
+
+    const MySystem = SystemBuilder({
+      id: "MySystem",
+      init: (world) => {
+        // Initialize system state
+        let counter = 0
+
+        return {
+          id: "MySystem",
+          query: ["position", "health"],
+          priority: 5,
+          onTick: (entities: Entity<Position | Health>[]) => {
+            counter++
+            
+            for (const entity of entities) {
+              const { position, health } = entity.components
+              
+              // System logic here
+              if (health.dead()) {
+                world.removeEntity(entity.id)
+              }
+            }
+          }
+        }
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="Client-only systems">
+    Use `ClientSystemBuilder` for rendering and UI:
+
+    ```typescript
+    import { ClientSystemBuilder } from "@piggo-gg/core"
+
+    const UISystem = ClientSystemBuilder({
+      id: "UISystem",
+      init: (world) => {
+        // Only runs on client
+        const scoreDiv = document.createElement('div')
+        document.body.appendChild(scoreDiv)
+
+        return {
+          id: "UISystem",
+          query: [],
+          priority: 10,
+          onTick: () => {
+            const state = world.state<MyGameState>()
+            scoreDiv.textContent = `Score: ${state.score}`
+          }
+        }
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="System with networked data">
+    Systems can have networked state via a SystemEntity:
+
+    ```typescript
+    const MySystem = SystemBuilder({
+      id: "MySystem",
+      init: (world) => {
+        return {
+          id: "MySystem",
+          query: [],
+          priority: 5,
+          data: {
+            timer: 0,
+            phase: "setup"
+          },
+          onTick: () => {
+            const systemEntity = world.entity("SystemEntity-MySystem")
+            const data = systemEntity?.components.data?.data
+            
+            if (data) {
+              data.timer++
+              if (data.timer > 100) {
+                data.phase = "playing"
+              }
+            }
+          }
+        }
+      }
+    })
+    ```
+  </Step>
+</Steps>
+
+## Built-in Systems
+
+<Steps>
+  <Step title="PhysicsSystem">
+    Handles Rapier2D physics simulation and collision detection.
+
+    ```typescript core/src/ecs/systems/gameplay/PhysicsSystem.ts
+    import { PhysicsSystem } from "@piggo-gg/core"
+
+    // Global physics (runs on server and all clients)
+    PhysicsSystem("global")
+
+    // Local physics (client-side prediction)
+    PhysicsSystem("local")
+    ```
+
+    **What it does:**
+    - Creates Rapier rigid bodies for entities with Collider components
+    - Steps the physics simulation 4 times per tick
+    - Updates entity positions based on physics results
+    - Handles collision detection and sensor callbacks
+    - Applies friction and gravity
+
+    **Priority:** 7 (global), 9 (local)
+  </Step>
+
+  <Step title="ActionSystem">
+    Processes queued actions from the action buffer.
+
+    ```typescript core/src/ecs/systems/gameplay/ActionSystem.ts
+    import { ActionSystem } from "@piggo-gg/core"
+    ```
+
+    **What it does:**
+    - Retrieves actions scheduled for current tick
+    - Invokes action handlers on entities
+    - Executes world commands
+    - Sorts actions for deterministic execution
+
+    **Priority:** 8
+
+    Example action invocation:
+    ```typescript
+    world.actions.push(world.tick + 1, entity.id, {
+      actionId: "shoot",
+      params: { damage: 25 },
+      playerId: "player-123"
+    })
+    ```
+  </Step>
+
+  <Step title="SpawnSystem">
+    Spawns player characters when they join.
+
+    ```typescript
+    import { SpawnSystem } from "@piggo-gg/core"
+    import { MyCharacter } from "./MyCharacter"
+
+    SpawnSystem({
+      spawner: MyCharacter,
+      pos: { x: 0, y: 0, z: 2 }
+    })
+    ```
+
+    **What it does:**
+    - Monitors player entities
+    - Creates character entities using the spawner function
+    - Assigns controlling component to link player and character
+    - Handles respawning on death
+  </Step>
+
+  <Step title="PixiRenderSystem">
+    Renders 2D sprites with PixiJS.
+
+    ```typescript
+    import { PixiRenderSystem } from "@piggo-gg/core"
+    ```
+
+    **What it does:**
+    - Initializes Renderable components
+    - Updates sprite positions and animations
+    - Handles visibility and z-sorting
+    - Calls `onRender` callbacks on renderables
+    - Manages sprite lifecycle
+
+    **Runs:** Every frame (onRender hook)
+  </Step>
+
+  <Step title="ThreeSystem">
+    Renders 3D models with Three.js.
+
+    ```typescript
+    import { ThreeSystem } from "@piggo-gg/core"
+    ```
+
+    **What it does:**
+    - Initializes Three components
+    - Loads GLTF models
+    - Updates model positions and animations
+    - Calls `onRender` callbacks
+    - Manages mesh lifecycle
+  </Step>
+
+  <Step title="HUDSystem">
+    Displays keyboard controls overlay.
+
+    ```typescript
+    import { HUDSystem, HUDSystemProps } from "@piggo-gg/core"
+
+    const controls: HUDSystemProps = {
+      clusters: [
+        {
+          label: "move",
+          buttons: [["W", "A", "S", "D"]]
+        },
+        {
+          label: "jump",
+          buttons: [["spacebar"]]
+        }
+      ]
+    }
+
+    HUDSystem(controls)
+    ```
+  </Step>
+</Steps>
+
+## System Execution Order
+
+Systems run in priority order every tick:
+
+```typescript
+// Lower priority = runs first
+const systems = [
+  MySystem1,          // priority: 1
+  PhysicsSystem,      // priority: 7
+  ActionSystem,       // priority: 8
+  PixiRenderSystem,   // priority: 15
+]
+```
+
+**Common priorities:**
+- `1-5`: Pre-physics setup
+- `7-9`: Physics simulation
+- `10-15`: Post-physics logic
+- `20+`: Rendering and UI
+
+## Complete System Example
+
+Here's the Island game's main system:
+
+```typescript core/src/games/island/Island.ts
+const IslandSystem = SystemBuilder({
+  id: "IslandSystem",
+  init: (world) => {
+    const mobileUI = MobileUI(world)
+
+    const queueDiceRoll = (shooterId: string, delay = 1) => {
+      const shooter = world.entity(shooterId)
+      world.actions.push(world.tick + delay, "dice-1", {
+        actionId: "roll",
+        params: { shooterId }
+      })
+      shooter?.components.renderable?.setAnimation("spike")
+    }
+
+    return {
+      id: "IslandSystem",
+      query: [],
+      priority: 6,
+      onTick: () => {
+        mobileUI?.update()
+        const state = world.state<IslandState>()
+        const characters = world.characters()
+
+        // Advance turn timer
+        if (state.advanceAt !== null && world.tick >= state.advanceAt) {
+          state.advanceAt = null
+          advanceTurn(state, characters)
+          return
+        }
+
+        // Auto-roll dice for AI
+        if (state.autoRollAt !== null && world.tick >= state.autoRollAt) {
+          state.autoRollAt = null
+          if (state.shooter) {
+            queueDiceRoll(state.shooter, 0)
+            state.rollQueued = true
+          }
+        }
+
+        // Calculate dice result
+        if (state.die1 && state.die2 && state.rolled === null) {
+          let result = state.die1 + state.die2
+          if ((state.die1 === 6 && state.die2 === 1) || 
+              (state.die1 === 1 && state.die2 === 6)) {
+            result = 67 // Critical roll!
+          }
+          state.rolled = result
+          state.rollId += 1
+        }
+
+        // Handle roll result
+        if (state.rolled !== null && state.rollId !== state.handledRollId) {
+          state.handledRollId = state.rollId
+          
+          if (state.rolled === 67) {
+            world.client?.sound.play({ name: "jingle1" })
+            state.advanceAt = world.tick + 40
+          }
+        }
+      }
+    }
+  }
+})
+```
+
+## System Hooks
+
+### onTick
+
+Runs every game tick (40 times per second):
+
+```typescript
+onTick: (entities: Entity[], isRollback: boolean) => {
+  // Game logic
+  for (const entity of entities) {
+    // Process each entity
+  }
+}
+```
+
+### onRender
+
+Runs every frame for smooth rendering:
+
+```typescript
+onRender: (entities: Entity[], deltaMS: number, since: number) => {
+  // Rendering logic
+  // delta = milliseconds since last render
+  // since = milliseconds since last tick
+}
+```
+
+### onTickEnd
+
+Runs after all systems complete their onTick:
+
+```typescript
+onTickEnd: () => {
+  // Cleanup or final calculations
+}
+```
+
+### onRollback
+
+Runs when rollback netcode rewinds:
+
+```typescript
+onRollback: () => {
+  // Reset local state
+  resetPhysics()
+}
+```
+
+## Querying Entities
+
+Systems automatically receive entities matching their query:
+
+```typescript
+query: ["position", "health"],
+onTick: (entities: Entity<Position | Health>[]) => {
+  // Only entities with BOTH position AND health components
+}
+```
+
+Custom queries in system logic:
+
+```typescript
+onTick: () => {
+  // All entities with position
+  const moving = world.queryEntities<Position>(
+    ["position"],
+    (e) => e.components.position.getSpeed() > 0
+  )
+
+  // All players
+  const players = world.players()
+
+  // All characters
+  const characters = world.characters()
+
+  // Specific entity
+  const entity = world.entity("entity-123")
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Single purpose" icon="crosshairs">
+    Each system should handle one aspect of game logic (physics, AI, scoring).
+  </Card>
+  <Card title="Query efficiency" icon="gauge-high">
+    Only query for components you actually use to minimize processing.
+  </Card>
+  <Card title="Avoid side effects" icon="shield-halved">
+    Systems should primarily modify component data, not global state.
+  </Card>
+  <Card title="Client vs Server" icon="server">
+    Use ClientSystemBuilder for UI/rendering. Regular systems run everywhere.
+  </Card>
+</CardGroup>
+
+## Performance Tips
+
+<AccordionGroup>
+  <Accordion title="Use skipOnRollback for expensive operations">
+    ```typescript
+    {
+      id: "ParticleSystem",
+      skipOnRollback: true, // Don't run during rollback rewind
+      onTick: () => {
+        // Expensive particle effects
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Cache expensive calculations">
+    ```typescript
+    init: (world) => {
+      let cachedResult = null
+      let cacheValid = false
+
+      return {
+        onTick: () => {
+          if (!cacheValid) {
+            cachedResult = expensiveCalculation()
+            cacheValid = true
+          }
+          // Use cachedResult
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Throttle non-critical updates">
+    ```typescript
+    onTick: () => {
+      if (world.tick % 10 !== 0) return // Run every 10 ticks
+      
+      // Non-critical update logic
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Components" href="/building/components" icon="cube">
+    Learn about component data structures
+  </Card>
+  <Card title="Entities" href="/building/entities" icon="shapes">
+    Combine components into entities
+  </Card>
+  <Card title="Actions" href="/building/actions" icon="bolt">
+    Handle player input and events
+  </Card>
+</CardGroup>

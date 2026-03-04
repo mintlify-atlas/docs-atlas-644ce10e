@@ -1,0 +1,512 @@
+---
+title: 'Jam'
+description: 'Rhythm and movement game with music and voxel environment'
+---
+
+Jam is a rhythm-based game where players move and dance in a voxel nightclub environment with music synchronization.
+
+## Gameplay
+
+- **Genre**: Rhythm/music game
+- **Environment**: Voxel nightclub
+- **Movement**: Free dancing and jumping
+- **Music**: Synchronized audio
+- **Social**: Multiplayer dance party
+- **Aesthetics**: Dark nightclub atmosphere
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/jam/Jam.ts:22`
+
+```typescript
+export const Jam: GameBuilder<JamState, JamSettings> = {
+  id: "jam",
+  init: (world) => ({
+    id: "jam",
+    netcode: "rollback",
+    renderer: "three",
+    settings: {
+      blockColor: "white",
+      showControls: true,
+      showCrosshair: true,
+      showNametags: true
+    },
+    state: {
+      doubleJumped: []
+    },
+    systems: [
+      JamSystem,
+      SpawnSystem({ spawner: Bob, pos: { x: 0, y: 0, z: 3 } }),
+      BlockPhysicsSystem("global"),
+      BlockPhysicsSystem("local"),
+      ThreeCameraSystem({ height: 0.5, distance: 1 }),
+      JamBoundsSystem,
+      HUDSystem(controls),
+      ThreeNametagSystem,
+      BlockMeshSystem({ 
+        counts: { 
+          grass: 4000, 
+          leaf: 0, 
+          oak: 0, 
+          spruce: 0, 
+          marble: 4000 
+        } 
+      }),
+      ThreeSystem,
+      InventorySystem
+    ],
+    entities: [
+      Crosshair(),
+      EscapeMenu(world),
+      HtmlChat(),
+      HtmlLagText(),
+      HtmlFpsText(),
+      Sun({ getDayness: () => 0 }),  // Always night
+      Sky({ getDayness: () => 0 }),
+      HtmlFpsText()
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type JamState = {
+  doubleJumped: string[]  // Players who used double jump
+}
+```
+
+### Settings
+
+```typescript
+export type JamSettings = {
+  blockColor: BlockColor
+  showControls: boolean
+  showCrosshair: boolean
+  showNametags: boolean
+}
+```
+
+## Systems
+
+### JamSystem
+
+Location: `core/src/games/jam/Jam.ts:64`
+
+```typescript
+const JamSystem = SystemBuilder({
+  id: "JamSystem",
+  init: (world) => {
+    // Load the nightclub map
+    world.blocks.loadMap(JamMap)
+    world.blocks.coloring = JamMapColoring
+
+    return {
+      id: "JamSystem",
+      query: [],
+      priority: 1
+    }
+  }
+})
+```
+
+### JamBoundsSystem
+
+Location: `core/src/games/jam/Jam.ts:79`
+
+Keeps players within the club:
+
+```typescript
+const JamBoundsSystem = SystemBuilder({
+  id: "JamBoundsSystem",
+  init: (world) => ({
+    id: "JamBoundsSystem",
+    query: ["position"],
+    priority: 6,
+    onTick: (entities: Entity[]) => {
+      const state = world.state<JamState>()
+
+      for (const entity of entities) {
+        if (!entity.id.startsWith("jammer-")) continue
+
+        const { position } = entity.components
+        if (!position) continue
+
+        // Reset double jump on landing
+        if (position.data.standing) {
+          state.doubleJumped = state.doubleJumped.filter((id) => id !== entity.id)
+        }
+
+        // Respawn if fell off
+        if (position.data.z < -8) {
+          position.setPosition({ x: 0, y: 0, z: 4 })
+          position.setVelocity({ x: 0, y: 0, z: 0 })
+        }
+      }
+    }
+  })
+})
+```
+
+## Entities
+
+### Bob (Dancer Character)
+
+Location: Uses `core/src/games/build/Bob.ts`
+
+Same character as Build game:
+- Free movement
+- Jumping
+- Camera controls
+- 3D cowboy model
+
+### JamDancer
+
+Location: `core/src/games/jam/JamDancer.ts`
+
+Alternative dancer character (if implemented):
+
+```typescript
+export const JamDancer = (player: Player): Character => {
+  return Character({
+    id: `jammer-${player.id}`,
+    components: {
+      position: Position({
+        x: 0, y: 0, z: 3,
+        friction: true,
+        gravity: 0.003
+      }),
+      // Dancing animations
+      // Rhythm input
+      // Music synchronization
+    }
+  })
+}
+```
+
+### Map Entities
+
+#### JamMap
+
+Location: `core/src/games/jam/JamMap.ts`
+
+Nightclub floor plan:
+
+```typescript
+export const JamMap: XYZ[] = [
+  // Dance floor
+  // Stage
+  // Bar area
+  // Walls
+  // Lighting positions
+]
+
+export const JamMapColoring: Record<string, BlockColor> = {
+  // Colorful blocks for nightclub aesthetic
+  // Dance floor = bright colors
+  // Walls = dark
+}
+```
+
+## Music System
+
+### HtmlJamMusic
+
+Location: `core/src/games/jam/HtmlJamMusic.ts`
+
+Audio player UI:
+
+```typescript
+export const HtmlJamMusic = (): Entity => Entity({
+  id: "jam-music",
+  components: {
+    html: HtmlDiv({
+      style: {
+        position: "fixed",
+        bottom: "20px",
+        left: "50%",
+        transform: "translateX(-50%)",
+        padding: "10px",
+        backgroundColor: "rgba(0, 0, 0, 0.8)",
+        borderRadius: "10px"
+      }
+    }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        // Music player controls
+        // Track selection
+        // Volume control
+        // Sync with gameplay
+      }
+    })
+  }
+})
+```
+
+### JamAudioStore
+
+Location: `core/src/games/jam/JamAudioStore.ts`
+
+Audio management:
+
+```typescript
+export const JamAudioStore = {
+  tracks: [
+    { id: "track1", name: "Dance Beat 1", bpm: 128 },
+    { id: "track2", name: "House Mix", bpm: 124 },
+    { id: "track3", name: "Electronic Vibe", bpm: 130 }
+  ],
+  
+  currentTrack: null as string | null,
+  
+  play: (trackId: string) => {
+    // Load and play track
+    // Update beat tracking
+  },
+  
+  stop: () => {
+    // Stop playback
+  },
+  
+  getBeat: () => {
+    // Return current beat number
+    // For rhythm synchronization
+  }
+}
+```
+
+### JamDanceState
+
+Location: `core/src/games/jam/JamDanceState.ts`
+
+Dance move tracking:
+
+```typescript
+export type DanceMove = "idle" | "jump" | "spin" | "slide" | "wave"
+
+export type JamDanceState = {
+  currentMove: DanceMove
+  beatAccuracy: number     // 0-100%
+  combo: number            // Consecutive hits
+  score: number            // Total points
+}
+
+export const updateDanceState = (state: JamDanceState, input: Input, beat: number) => {
+  // Check if input matches beat
+  // Update combo
+  // Award points
+  // Trigger animations
+}
+```
+
+## Lighting System
+
+Nightclub atmosphere:
+
+```typescript
+Sun({ getDayness: () => 0 })  // Always night
+Sky({ getDayness: () => 0 })  // Dark sky
+```
+
+Additional lighting:
+- Colored point lights
+- Strobing effects
+- Beat-synced lighting
+- Spotlight on stage
+
+## Controls
+
+Location: `core/src/games/jam/Jam.ts:107`
+
+```typescript
+const controls: HUDSystemProps = {
+  clusters: [
+    {
+      label: "move",
+      buttons: [["A", "S", "D"], ["W"]]
+    },
+    {
+      label: "jump",
+      buttons: [["spacebar"]]
+    },
+    {
+      label: "menu",
+      buttons: [["esc"]]
+    }
+  ]
+}
+```
+
+Rhythm controls (potential):
+- Arrow keys for dance moves
+- Number keys for emotes
+- Mouse for camera/targeting
+
+## Camera
+
+Location: System configuration
+
+```typescript
+ThreeCameraSystem({ height: 0.5, distance: 1 })
+```
+
+Features:
+- Third-person view
+- Shows dancer character
+- Good for watching others dance
+- Cinematic perspective
+
+## Block System
+
+Location: `core/src/games/jam/Jam.ts:46`
+
+```typescript
+BlockMeshSystem({ 
+  counts: { 
+    grass: 4000,   // Not used
+    leaf: 0,
+    oak: 0,
+    spruce: 0,
+    marble: 4000   // Nightclub blocks
+  } 
+})
+```
+
+Voxel nightclub:
+- Marble blocks for structure
+- Custom coloring for aesthetic
+- Dance floor
+- Stage
+- Bar/lounge areas
+
+## Multiplayer Features
+
+### Social Dancing
+
+- See other players dancing
+- Synchronized movements
+- Group performances
+- Chat while dancing
+
+### Rollback Netcode
+
+Location: Configuration
+
+```typescript
+netcode: "rollback"
+```
+
+Ensures:
+- Smooth multiplayer
+- Low-latency moves
+- Synchronized experience
+
+## Visual Style
+
+### Dark Theme
+
+```typescript
+Sun({ getDayness: () => 0 })  // Always 0 = night
+Sky({ getDayness: () => 0 })
+```
+
+### Colorful Blocks
+
+Nightclub aesthetic:
+- Neon colors
+- Contrasting blocks
+- Dance floor patterns
+- Stage lighting effects
+
+## Movement
+
+### Free Movement
+
+- WASD controls
+- Jumping
+- Double jump
+- Camera-relative direction
+
+### Dance Mechanics (Potential)
+
+- Rhythm-based inputs
+- Beat matching
+- Combo systems
+- Score tracking
+- Move variety
+
+## Map Design
+
+Location: `core/src/games/jam/JamMap.ts`
+
+Nightclub layout:
+
+```typescript
+export const JamMap: XYZ[] = [
+  // Main dance floor (center)
+  // Stage area (elevated)
+  // Bar/lounge (side)
+  // Walls (boundaries)
+  // Platforms (multi-level)
+]
+```
+
+Features:
+- Multiple levels
+- Dance floor space
+- Social areas
+- Visual interest
+- Performance spaces
+
+## Key Features
+
+### Music-Focused
+
+- Rhythm gameplay
+- Beat synchronization
+- Audio player UI
+- Track selection
+
+### Social Experience
+
+- Multiplayer dancing
+- Spectator mode
+- Chat integration
+- Group activities
+
+### Visual Appeal
+
+- Night atmosphere
+- Colorful blocks
+- Lighting effects
+- Cinematic camera
+
+### Casual Fun
+
+- Easy controls
+- No win/lose
+- Creative expression
+- Relaxing gameplay
+
+## Related Files
+
+- `Bob.ts` - Dancer character (from Build)
+- `JamMap.ts` - Nightclub layout
+- `JamDancer.ts` - Alternative dancer
+- `HtmlJamMusic.ts` - Music player UI
+- `JamAudioStore.ts` - Audio management
+- `JamDanceState.ts` - Dance tracking
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Island" href="/games/island">
+    Another unique gameplay experience
+  </Card>
+  <Card title="Build" href="/games/build">
+    Similar voxel 3D environment
+  </Card>
+</CardGroup>

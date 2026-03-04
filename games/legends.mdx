@@ -1,0 +1,852 @@
+---
+title: 'Legends'
+description: 'MOBA-style game with fog of war, minions, turrets, and team-based strategy'
+---
+
+Legends is a MOBA (Multiplayer Online Battle Arena) game featuring top-down camera controls, fog of war vision system, AI minions, defensive turrets, and strategic team gameplay.
+
+## Gameplay
+
+- **Genre**: MOBA-style team strategy
+- **Camera**: Top-down RTS-style with click-to-move
+- **Vision**: Fog of war system
+- **Structures**: Turrets and inhibitors
+- **AI**: Minion waves
+- **Combat**: Ability-based with cooldowns
+- **Objective**: Destroy enemy base
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/legends/Legends.ts:87`
+
+```typescript
+export const Legends: GameBuilder<LegendsState, LegendsSettings> = {
+  id: "legends",
+  init: (world) => ({
+    id: "legends",
+    netcode: "delay",
+    renderer: "three",
+    settings: {
+      cameraDistance: 4,
+      showControls: true,
+      selectedEntityId: undefined
+    },
+    state: {},
+    systems: [
+      LegendsWorldSystem,
+      SpawnSystem({ spawner: Leo, pos: { x: 0, y: 0, z: 0.4 } }),
+      RapierPhysics("global"),
+      RapierPhysics("local"),
+      LegendsBoundsSystem,
+      HUDSystem(controls),
+      LegendsAbilityBarSystem,
+      LegendsCameraSystem,
+      HoverSystem,
+      BlockMeshSystem({ 
+        counts: { 
+          grass: 8000, 
+          leaf: 0, 
+          oak: 0, 
+          spruce: 0, 
+          marble: 18000 
+        } 
+      }),
+      ThreeSystem,
+      ParticleSystem,
+      LegendsHealthbarSystem,
+      LegendsVisionSystem
+    ],
+    entities: [
+      Minion({ id: "legends-minion-1", team: 1, x: -2, y: 2 }),
+      Minion({ id: "legends-minion-2", team: 2, x: 2, y: -2 }),
+      Turret({ x: -16, y: 15, team: 1 }),
+      Turret({ x: -34, y: 33, team: 1 }),
+      Inhibitor({ x: -39, y: 39, team: 1 }),
+      Turret({ x: 16, y: -16, team: 2 }),
+      Turret({ x: 33, y: -34, team: 2 }),
+      Inhibitor({ x: 39, y: -39, team: 2 }),
+      Sun({ getDayness: () => 1, pos: { x: -50, y: 100, z: 50 } }),
+      EscapeMenu(world),
+      HtmlFpsText(),
+      LegendsMinimap()
+    ]
+  })
+}
+```
+
+### State
+
+```typescript
+export type LegendsState = {
+  // Game state managed by systems
+}
+```
+
+### Settings
+
+```typescript
+export type LegendsSettings = {
+  cameraDistance: number        // Zoom level
+  showControls: boolean
+  selectedEntityId: string | undefined  // RTS-style selection
+}
+```
+
+## Systems
+
+### LegendsWorldSystem
+
+Location: `core/src/games/legends/Legends.ts:29`
+
+Generates the map terrain:
+
+```typescript
+const LegendsWorldSystem = SystemBuilder({
+  id: "LegendsWorldSystem",
+  init: (world) => {
+    // Generate map
+    for (let x = -LEGENDS_BLOCK_RADIUS; x <= LEGENDS_BLOCK_RADIUS; x++) {
+      for (let y = -LEGENDS_BLOCK_RADIUS; y <= LEGENDS_BLOCK_RADIUS; y++) {
+        const inBlueBaseCorner = x <= -BASE_CORNER_START && y >= BASE_CORNER_START
+        const inRedBaseCorner = x >= BASE_CORNER_START && y <= -BASE_CORNER_START
+        const type = (inBlueBaseCorner || inRedBaseCorner || inLane(x, y))
+          ? BlockTypeInt.marble  // Lanes and bases
+          : BlockTypeInt.grass   // Jungle
+
+        world.blocks.add({ x, y, z: 0, type })
+      }
+    }
+
+    // Add terrain objects (walls, trees, etc.)
+    for (const plan of LegendsTerrainObjects(LEGENDS_BLOCK_RADIUS)) {
+      world.blocks.addPlan(plan)
+    }
+
+    world.blocks.coloring = { ...world.blocks.coloring, ...LegendsColoring }
+
+    return {
+      id: "LegendsWorldSystem",
+      query: [],
+      priority: 1
+    }
+  }
+})
+```
+
+### LegendsBoundsSystem
+
+Location: `core/src/games/legends/Legends.ts:58`
+
+Keeps players within map:
+
+```typescript
+const LegendsBoundsSystem = SystemBuilder({
+  id: "LegendsBoundsSystem",
+  init: () => ({
+    id: "LegendsBoundsSystem",
+    query: ["position"],
+    priority: 10,
+    onTick: (entities: Entity[]) => {
+      for (const entity of entities) {
+        if (!entity.id.startsWith("leo-")) continue
+
+        const { position } = entity.components
+        if (!position) continue
+
+        const clampedX = min(LEGENDS_LEO_SAFE_LIMIT, max(-LEGENDS_LEO_SAFE_LIMIT, position.data.x))
+        const clampedY = min(LEGENDS_LEO_SAFE_LIMIT, max(-LEGENDS_LEO_SAFE_LIMIT, position.data.y))
+
+        if (clampedX !== position.data.x || clampedY !== position.data.y) {
+          position.setPosition({ x: clampedX, y: clampedY })
+          position.setVelocity({ x: 0, y: 0 })
+          position.data.heading = {
+            x: min(LEGENDS_LEO_SAFE_LIMIT, max(-LEGENDS_LEO_SAFE_LIMIT, position.data.heading.x)),
+            y: min(LEGENDS_LEO_SAFE_LIMIT, max(-LEGENDS_LEO_SAFE_LIMIT, position.data.heading.y))
+          }
+        }
+      }
+    }
+  })
+})
+```
+
+### LegendsCameraSystem
+
+Location: `core/src/games/legends/LegendsCameraSystem.ts`
+
+RTS-style camera:
+
+```typescript
+export const LegendsCameraSystem = SystemBuilder({
+  id: "LegendsCameraSystem",
+  init: (world) => ({
+    id: "LegendsCameraSystem",
+    query: [],
+    priority: 11,
+    onTick: () => {
+      const settings = world.settings<LegendsSettings>()
+      const pc = world.client?.character()
+      if (!pc) return
+
+      const camera = world.three?.camera
+      if (!camera) return
+
+      const { position } = pc.components
+      const targetPos = position.interpolate(world, 0)
+
+      // Camera follows player from above
+      camera.c.position.set(
+        targetPos.x,
+        targetPos.z + settings.cameraDistance,
+        targetPos.y
+      )
+
+      // Look down at player
+      camera.c.lookAt(targetPos.x, 0, targetPos.y)
+    }
+  })
+})
+```
+
+### LegendsVisionSystem
+
+Location: `core/src/games/legends/LegendsVisionSystem.ts`
+
+Fog of war implementation:
+
+```typescript
+export const LegendsVisionSystem = SystemBuilder({
+  id: "LegendsVisionSystem",
+  init: (world) => ({
+    id: "LegendsVisionSystem",
+    query: ["three"],
+    priority: 12,
+    onTick: (entities: Entity[]) => {
+      const pc = world.client?.character()
+      if (!pc) return
+
+      const playerTeam = pc.components.team?.data.team
+      if (!playerTeam) return
+
+      // Get all friendly units (vision providers)
+      const friendlies = world.queryEntities(["position", "team"]).filter(e => 
+        e.components.team.data.team === playerTeam
+      )
+
+      // Check visibility for each entity
+      for (const entity of entities) {
+        const { position, three, team } = entity.components
+        if (!position || !three) continue
+
+        let visible = false
+
+        // Always see friendly units
+        if (team && team.data.team === playerTeam) {
+          visible = true
+        } else {
+          // Check if in vision range of any friendly
+          for (const friendly of friendlies) {
+            const dist = hypot(
+              position.data.x - friendly.components.position.data.x,
+              position.data.y - friendly.components.position.data.y
+            )
+            if (dist < VISION_RANGE) {
+              visible = true
+              break
+            }
+          }
+        }
+
+        // Update visibility
+        three.objects.forEach(obj => {
+          obj.visible = visible
+        })
+      }
+    }
+  })
+})
+```
+
+### LegendsHealthbarSystem
+
+Location: `core/src/games/legends/LegendsHealthbarSystem.ts`
+
+HP bars above units:
+
+```typescript
+export const LegendsHealthbarSystem = SystemBuilder({
+  id: "LegendsHealthbarSystem",
+  init: (world) => ({
+    id: "LegendsHealthbarSystem",
+    query: ["health", "position"],
+    priority: 13,
+    onTick: (entities: Entity[]) => {
+      for (const entity of entities) {
+        const { health, position } = entity.components
+        
+        // Create/update healthbar UI
+        const hpPercent = health.data.hp / health.data.maxHp
+        // Render bar above entity
+      }
+    }
+  })
+})
+```
+
+### LegendsAbilityBarSystem
+
+Location: `core/src/games/legends/LegendsAbilityBarSystem.ts`
+
+Ability cooldown UI:
+
+```typescript
+export const LegendsAbilityBarSystem = SystemBuilder({
+  id: "LegendsAbilityBarSystem",
+  init: () => ({
+    id: "LegendsAbilityBarSystem",
+    query: [],
+    priority: 14,
+    onTick: () => {
+      // Display Q, W, E, R abilities
+      // Show cooldowns
+      // Mana costs
+    }
+  })
+})
+```
+
+### HoverSystem
+
+Location: `core/src/games/legends/HoverSystem.ts`
+
+Mouse hover detection:
+
+```typescript
+export const HoverSystem = SystemBuilder({
+  id: "HoverSystem",
+  init: (world) => ({
+    id: "HoverSystem",
+    query: ["hover"],
+    priority: 8,
+    onTick: (entities: Entity[]) => {
+      // Raycast from mouse
+      // Update hover state
+      // Show tooltips
+    }
+  })
+})
+```
+
+## Entities
+
+### Leo (Player Character)
+
+Location: `core/src/games/legends/Leo.ts:27`
+
+MOBA champion:
+
+```typescript
+export const Leo = (player: Player): Character => {
+  let model: Object3D = new Object3D()
+  let outline: Object3D = new Object3D()
+  let mixer: AnimationMixer | undefined
+  let targetYaw = 0
+
+  const leo = Character({
+    id: `leo-${player.id}`,
+    components: {
+      position: Position({
+        x: 0, y: 0, z: 0.5,
+        speed: 2,
+        gravity: 0.005,
+        friction: true,
+        velocityResets: 1
+      }),
+      networked: Networked(),
+      collider: Collider({ shape: "ball", radius: 0.1, group: "notme1" }),
+      team: Team(player.components.team.data.team),
+      health: Health(),
+      hover: Hover({
+        hoverables: () => [model]
+      }),
+      npc: NPC({
+        behavior: () => {
+          const { position } = leo.components
+          const { heading, x, y, speed } = position.data
+
+          if (leo.components.health?.dead()) {
+            position.clearHeading()
+            position.setVelocity({ x: 0, y: 0 })
+            return
+          }
+
+          // Move toward heading
+          const dx = heading.x - x
+          const dy = heading.y - y
+          const distance = Math.hypot(dx, dy)
+
+          if (distance) {
+            targetYaw = Math.atan2(dx, dy)
+          }
+
+          // Stop if close enough
+          if (distance <= abs(speed / 40)) {
+            position.setPosition({ x: heading.x, y: heading.y })
+            position.setVelocity({ x: 0, y: 0 })
+            position.clearHeading()
+            return
+          }
+
+          return { 
+            actionId: "headingMove", 
+            params: { x: dx / distance * speed, y: dy / distance * speed } 
+          }
+        }
+      }),
+      input: Input({
+        press: {
+          "s": () => ({ actionId: "stop" }),
+          "g": ({ mouse, hold }) => {
+            if (hold) return
+            return { actionId: "ping", params: { clamped: clampToLegendsBounds(mouse), kind: "alert" } }
+          },
+          " ": ({ hold }) => {
+            if (hold) return
+            if (!leo.components.position.data.standing) return
+            leo.components.position.setVelocity({ z: 0.1 })
+          },
+          "v": ({ mouse, hold }) => {
+            if (hold) return
+            return { actionId: "ping", params: { clamped: clampToLegendsBounds(mouse), kind: "assist" } }
+          },
+          "mb2": ({ mouse, hold }) => {
+            if (leo.components.health?.dead()) return
+            const clamped = clampToLegendsBounds(mouse)
+            return { actionId: "heading", params: { clamped } }
+          }
+        }
+      }),
+      actions: Actions({
+        heading: Action("heading", ({ params }) => {
+          if (leo.components.health?.dead()) return
+          leo.components.position.setHeading(params.clamped)
+        }),
+        stop: Action("stop", () => {
+          leo.components.position.clearHeading()
+        }),
+        ping: Action<PingParams>("ping", ({ entity, params, player, world }) => {
+          if (!entity?.components.team || !params?.clamped) return
+
+          world.addEntity(LegendsPing({
+            id: `ping-${params.kind}-${entity.components.team.data.team}-${player?.id ?? "player"}-${world.tick}`,
+            team: entity.components.team.data.team,
+            kind: params.kind,
+            x: params.clamped.x,
+            y: params.clamped.y
+          }))
+        }),
+        headingMove: Action("headingMove", ({ entity, params }) => {
+          if (!entity?.components.position) return
+          if (leo.components.health?.dead()) return
+          entity.components.position.setVelocity({ x: params.x, y: params.y })
+        })
+      }),
+      three: Three({
+        init: async ({ o, three }) => {
+          // Load cowboy.glb model
+          // Set up animations
+          // Create hover outline
+          // Create movement marker
+        },
+        onRender: ({ world, delta, since }) => {
+          // Update position
+          // Handle rotation toward movement
+          // Play animations (idle/run/death)
+          // Show hover outline
+          // Fade movement marker
+        }
+      })
+    }
+  })
+
+  return leo
+}
+```
+
+**Key Features:**
+- Click-to-move controls
+- Smooth rotation toward heading
+- Death state handling
+- Hover detection
+- Ping system (G, V keys)
+- Health tracking
+
+### Minion
+
+Location: `core/src/games/legends/Minion.ts`
+
+AI-controlled lane creeps:
+
+```typescript
+export const Minion = (params: { id: string, team: 1 | 2, x: number, y: number }): Entity => Entity({
+  id: params.id,
+  components: {
+    position: Position({
+      x: params.x,
+      y: params.y,
+      z: 0.4,
+      speed: 1,
+      gravity: 0.005,
+      friction: true
+    }),
+    team: Team(params.team),
+    health: Health({ max: 50 }),
+    collider: Collider({ shape: "ball", radius: 0.1 }),
+    networked: Networked(),
+    npc: NPC({
+      behavior: (entity, world) => {
+        // Move down lane
+        // Attack enemies in range
+        // Follow lane waypoints
+      }
+    }),
+    three: Three({
+      // Minion model
+    })
+  }
+})
+```
+
+### Turret
+
+Location: `core/src/games/legends/Turret.ts`
+
+Defensive structure:
+
+```typescript
+export const Turret = (params: { x: number, y: number, team: 1 | 2 }): Entity => Entity({
+  id: `turret-${params.team}-${params.x}-${params.y}`,
+  components: {
+    position: Position({
+      x: params.x,
+      y: params.y,
+      z: 0
+    }),
+    team: Team(params.team),
+    health: Health({ max: 200 }),
+    networked: Networked(),
+    npc: NPC({
+      behavior: (entity, world) => {
+        // Find enemies in range
+        // Shoot projectiles
+        // Prioritize champions over minions
+        
+        const enemies = world.queryEntities(["position", "team", "health"])
+          .filter(e => e.components.team.data.team !== params.team)
+        
+        let target: Entity | null = null
+        let minDist = TURRET_RANGE
+        
+        for (const enemy of enemies) {
+          const dist = hypot(
+            enemy.components.position.data.x - params.x,
+            enemy.components.position.data.y - params.y
+          )
+          if (dist < minDist) {
+            target = enemy
+            minDist = dist
+          }
+        }
+        
+        if (target && world.tick % 40 === 0) {
+          // Fire projectile
+          world.addEntity(TurretProjectile({
+            from: { x: params.x, y: params.y, z: 1 },
+            target: target.id,
+            team: params.team
+          }))
+        }
+      }
+    }),
+    three: Three({
+      // Turret model
+    })
+  }
+})
+```
+
+### Inhibitor
+
+Location: `core/src/games/legends/Inhibitor.ts`
+
+Base structure:
+
+```typescript
+export const Inhibitor = (params: { x: number, y: number, team: 1 | 2 }): Entity => Entity({
+  id: `inhibitor-${params.team}`,
+  components: {
+    position: Position({ x: params.x, y: params.y, z: 0 }),
+    team: Team(params.team),
+    health: Health({ max: 500 }),
+    networked: Networked(),
+    three: Three({
+      // Inhibitor model
+    })
+  }
+})
+```
+
+### TurretProjectile
+
+Location: `core/src/games/legends/TurretProjectile.ts`
+
+Turret attack projectile:
+
+```typescript
+export const TurretProjectile = (params: { from: XYZ, target: string, team: 1 | 2 }): Entity => Entity({
+  id: `projectile-${world.tick}`,
+  components: {
+    position: Position({
+      x: params.from.x,
+      y: params.from.y,
+      z: params.from.z,
+      gravity: 0
+    }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        const target = world.entity(params.target)
+        if (!target) {
+          world.removeEntity(entity.id)
+          return
+        }
+        
+        // Move toward target
+        const targetPos = target.components.position.data
+        const dx = targetPos.x - entity.components.position.data.x
+        const dy = targetPos.y - entity.components.position.data.y
+        const dist = hypot(dx, dy)
+        
+        if (dist < 0.2) {
+          // Hit target
+          target.components.health?.damage(TURRET_DAMAGE)
+          world.removeEntity(entity.id)
+        } else {
+          entity.components.position.setVelocity({
+            x: (dx / dist) * PROJECTILE_SPEED,
+            y: (dy / dist) * PROJECTILE_SPEED
+          })
+        }
+      }
+    }),
+    three: Three({
+      // Projectile visual
+    })
+  }
+})
+```
+
+### LegendsPing
+
+Location: `core/src/games/legends/LegendsPing.ts`
+
+Communication markers:
+
+```typescript
+export type LegendsPingKind = "alert" | "assist" | "danger" | "missing"
+
+export const LegendsPing = (params: {
+  id: string
+  team: 1 | 2
+  kind: LegendsPingKind
+  x: number
+  y: number
+}): Entity => Entity({
+  id: params.id,
+  components: {
+    position: Position({ x: params.x, y: params.y, z: 0 }),
+    expires: Expires(world.tick + 120),  // 3 seconds
+    three: Three({
+      // Ping visual effect
+      // Color based on kind
+      // Pulsing animation
+    })
+  }
+})
+```
+
+### LegendsMinimap
+
+Location: `core/src/games/legends/LegendsMinimap.ts`
+
+Minimap UI:
+
+```typescript
+export const LegendsMinimap = (): Entity => Entity({
+  id: "minimap",
+  components: {
+    html: HtmlDiv({
+      style: {
+        position: "fixed",
+        bottom: "20px",
+        right: "20px",
+        width: "200px",
+        height: "200px",
+        border: "2px solid white",
+        backgroundColor: "rgba(0, 0, 0, 0.5)"
+      }
+    }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        // Draw map
+        // Show player positions
+        // Show structures
+        // Click to ping
+      }
+    })
+  }
+})
+```
+
+## Map Layout
+
+Location: `core/src/games/legends/LegendsTerrain.ts`
+
+### Lanes
+
+```typescript
+export const inLane = (x: number, y: number): boolean => {
+  // Top lane (diagonal)
+  const topLane = abs(x + y) < LANE_WIDTH
+  
+  // Bottom lane (diagonal)
+  const botLane = abs(x - y) < LANE_WIDTH
+  
+  // Mid lane (through center)
+  const midLane = abs(x) < LANE_WIDTH && abs(y) < LANE_WIDTH
+  
+  return topLane || botLane || midLane
+}
+```
+
+### Terrain Objects
+
+```typescript
+export const LegendsTerrainObjects = (radius: number): BlockPlan[] => [
+  // Walls
+  // Trees (jungle)
+  // Brushes (vision blockers)
+  // Rivers
+]
+```
+
+### Coloring
+
+```typescript
+export const LegendsColoring: Record<string, BlockColor> = {
+  // Lane = light gray (marble)
+  // Jungle = green (grass)
+  // Bases = team colors
+}
+```
+
+## Constants
+
+Location: `core/src/games/legends/LegendsConstants.ts`
+
+```typescript
+export const LEGENDS_BLOCK_RADIUS = 50
+export const LEGENDS_LEO_SAFE_LIMIT = 45
+
+export const LANE_WIDTH = 3
+export const BASE_CORNER_START = 26
+
+export const VISION_RANGE = 10
+export const TURRET_RANGE = 8
+export const TURRET_DAMAGE = 20
+export const PROJECTILE_SPEED = 5
+```
+
+## Controls
+
+Location: `core/src/games/legends/Legends.ts:135`
+
+```typescript
+const controls: HUDSystemProps = {
+  clusters: [
+    {
+      label: "move",
+      buttons: [["mb2"]]
+    },
+    {
+      label: "zoom",
+      buttons: [["mb3"]]
+    },
+    {
+      label: "pings",
+      buttons: [["g", "v"]]
+    },
+    {
+      label: "menu",
+      buttons: [["esc"]]
+    }
+  ]
+}
+```
+
+## Key Features
+
+### RTS Controls
+
+- Right-click to move
+- Click-to-target
+- Minimap interaction
+- Ping system
+
+### Fog of War
+
+- Vision ranges
+- Team visibility
+- Strategic positioning
+- Map awareness
+
+### AI Systems
+
+- Minion waves
+- Turret targeting
+- Lane pushing
+- Objective control
+
+### Strategic Depth
+
+- Lane management
+- Structure objectives
+- Team coordination
+- Vision control
+
+## Related Files
+
+- `Leo.ts` - Player champion
+- `Minion.ts` - Lane creeps
+- `Turret.ts` - Defensive tower
+- `Inhibitor.ts` - Base structure
+- `TurretProjectile.ts` - Turret attacks
+- `LegendsPing.ts` - Communication
+- `LegendsMinimap.ts` - Map UI
+- `LegendsTerrain.ts` - Map generation
+- `LegendsVisionSystem.ts` - Fog of war
+- `LegendsCameraSystem.ts` - Top-down camera
+- `LegendsHealthbarSystem.ts` - HP bars
+- `LegendsAbilityBarSystem.ts` - Ability UI
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Build" href="/games/build">
+    Another Three.js 3D game
+  </Card>
+  <Card title="Strike" href="/games/strike">
+    Team-based competitive gameplay
+  </Card>
+</CardGroup>

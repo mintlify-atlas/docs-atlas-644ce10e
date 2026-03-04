@@ -1,0 +1,569 @@
+---
+title: "Server"
+description: "Authoritative game server with lobby management and multiplayer synchronization"
+---
+
+## Overview
+
+The Piggo server runs authoritative game simulations for multiplayer lobbies using WebSocket connections with MessagePack encoding. Each lobby has its own `ServerWorld` instance that manages players, processes inputs, and broadcasts game state.
+
+## Architecture
+
+```
+API (Bun Server)
+├── WebSocket Connections (MessagePack)
+├── HTTP Endpoints (Discord, Auth)
+└── Lobbies
+    └── ServerWorld
+        ├── World (ECS simulation)
+        ├── NetServerSystem (I/O)
+        └── Player Entities
+```
+
+## ServerWorld Type
+
+```ts
+export type ServerWorld = {
+  world: World
+  clients: Record<string, WS>
+  creator: WS
+  numClients: () => number
+  handleMessage: (ws: WS, msg: NetMessageTypes) => void
+  handleClose: (ws: WS) => void
+}
+
+export type WS = ServerWebSocket<PerClientData>
+
+export type PerClientData = {
+  id: number
+  ip: string | null
+  playerId: string
+  playerName?: string
+  worldId: string
+}
+```
+
+## Creating a ServerWorld
+
+```ts
+import { ServerWorld } from "@piggo-gg/server"
+import { ServerWebSocket } from "bun"
+
+const serverWorld = ServerWorld({ 
+  creator: ws  // WebSocket of lobby creator
+})
+
+// World is initialized with:
+// - Server mode
+// - NetServerSystem (networking)
+// - NoobSystem (AI bots)
+```
+
+## Server API
+
+### API Type
+
+```ts
+export type Api = {
+  bun: Server | undefined
+  http: Server | undefined
+  clientIncr: number
+  clients: Record<string, ServerWebSocket<PerClientData>>
+  worlds: Record<string, ServerWorld>
+  handlers: { [R in WSRequestTypes["route"]]: Handler<R> }
+  init: () => Api
+  handleClose: (ws: ServerWebSocket<PerClientData>) => void
+  handleOpen: (ws: ServerWebSocket<PerClientData>) => void
+  handleMessage: (ws: ServerWebSocket<PerClientData>, data: Buffer) => void
+}
+```
+
+### Starting the Server
+
+```ts
+import { Api } from "@piggo-gg/server"
+
+const server = Api().init()
+
+// Server listens on:
+// - ws://localhost:3000 (local)
+// - wss://api.piggo.gg (production)
+// - wss://piggo-api-staging.up.railway.app (dev)
+
+console.log(`包 ${server.bun?.url}`)
+```
+
+## Message Protocol
+
+All messages use MessagePack binary encoding for efficiency:
+
+```ts
+import { encode, decode } from "@msgpack/msgpack"
+
+export type NetMessageTypes = 
+  | GameData      // Game tick data
+  | RequestData   // API requests
+  | ResponseData  // API responses
+
+export type GameData = {
+  type: "game"
+  actions: Record<number, Record<string, InvokedAction[]>>
+  chats: Record<string, string[]>
+  game: GameTitle
+  playerId: string
+  serializedEntities: Record<string, SerializedEntity>
+  tick: number
+  timestamp: number
+  latency?: number  // Server adds round-trip latency
+  diff?: number     // Server adds tick difference
+}
+```
+
+## Lobby Management
+
+<Tabs>
+  <Tab title="Create Lobby">
+    ```ts
+    // Handler: lobby/create
+    "lobby/create": async ({ ws, data }) => {
+      const lobbyId = data.lobbyId || randomHash()
+
+      if (data.playerName) {
+        ws.data.playerName = data.playerName
+      }
+
+      // Join if it already exists (Discord)
+      if (api.worlds[lobbyId]) {
+        ws.data.worldId = lobbyId
+        return { id: data.id, lobbyId }
+      }
+
+      // Create new world
+      api.worlds[lobbyId] = ServerWorld({ creator: ws })
+      ws.data.worldId = lobbyId
+
+      return { id: data.id, lobbyId }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Join Lobby">
+    ```ts
+    // Handler: lobby/join
+    "lobby/join": async ({ ws, data }) => {
+      if (!api.worlds[data.join]) {
+        return { id: data.id, error: "world not found" }
+      }
+
+      ws.data.worldId = data.join
+      return { id: data.id }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="List Lobbies">
+    ```ts
+    // Handler: lobby/list
+    "lobby/list": async ({ data }) => {
+      const lobbies: Record<string, { 
+        id: string, 
+        players: number, 
+        creator: string, 
+        game: GameTitle 
+      }> = {}
+      
+      for (const [id, world] of entries(api.worlds)) {
+        if (world.numClients() === 0) continue
+        
+        lobbies[id] = {
+          id,
+          players: keys(world.clients).length,
+          creator: world.creator.data.playerName ?? "noob",
+          game: world.world.game.id
+        }
+      }
+      
+      return { id: data.id, lobbies }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Leave Lobby">
+    ```ts
+    // Handler: lobby/exit
+    "lobby/exit": async ({ data, ws }) => {
+      const world = api.worlds[ws.data.worldId]
+      if (world) {
+        world.handleClose(ws)
+        ws.data.worldId = ""
+      } else {
+        return { id: data.id, error: "world not found" }
+      }
+      return { id: data.id }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Player Management
+
+### Adding Players
+
+```ts
+handleMessage: (ws: WS, msg: NetMessageTypes) => {
+  if (msg.type !== "game") return
+
+  // Add player entity if it doesn't exist
+  if (!world.entities[msg.playerId]) {
+    ws.data.playerId = msg.playerId
+
+    const leader = world.players().length === 0
+    world.addEntity(Player({ 
+      id: msg.playerId, 
+      name: ws.data.playerName, 
+      leader 
+    }))
+
+    clients[msg.playerId] = ws
+    latestClientMessages[msg.playerId] = []
+
+    console.log(`id:${ws.data.playerId} name:${ws.data.playerName} connected ${ws.remoteAddress}`)
+  }
+
+  // Store the message for processing
+  latestClientMessages[msg.playerId].push(msg)
+
+  // Record latency
+  if (!lastMessageTick[msg.playerId] || lastMessageTick[msg.playerId] < msg.tick) {
+    latestClientLag[msg.playerId] = Date.now() - msg.timestamp
+    latestClientDiff[msg.playerId] = msg.tick - world.tick
+  }
+}
+```
+
+### Removing Players
+
+```ts
+handleClose: (ws: WS) => {
+  world.removeEntity(ws.data.playerId)
+
+  delete clients[ws.data.playerId]
+  delete latestClientMessages[ws.data.playerId]
+
+  console.log(`id:${ws.data.playerId} name:${ws.data.playerName} disconnected`)
+}
+```
+
+## NetServerSystem
+
+The `NetServerSystem` handles all network I/O for a lobby:
+
+```ts
+export const NetServerSystem = ({
+  world, 
+  clients, 
+  latestClientMessages, 
+  latestClientLag,
+  latestClientDiff,
+  lastMessageTick
+}: DelayServerSystemProps): System<"NetServerSystem"> => {
+
+  return {
+    id: "NetServerSystem",
+    query: [],
+    priority: 1,
+    onTick: () => {
+      read()   // Process client inputs
+      write()  // Send game state to clients
+    }
+  }
+}
+```
+
+### Read: Process Client Inputs
+
+<Tabs>
+  <Tab title="Rollback Mode">
+    ```ts
+    const readRollback = () => {
+      for (const clientId in latestClientMessages) {
+        const messages = latestClientMessages[clientId]
+
+        for (const message of messages) {
+          if (message.type !== "game") continue
+
+          // Validate message ordering
+          if (message.tick < world.tick) {
+            console.error(`OLD MESSAGE: msg:${message.tick} server:${world.tick}`)
+            continue
+          }
+
+          if (lastMessageTick[clientId] && message.tick <= lastMessageTick[clientId]) {
+            console.error(`OUT OF ORDER: msg:${message.tick} last:${lastMessageTick[clientId]}`)
+            continue
+          }
+
+          lastMessageTick[clientId] = message.tick
+
+          // Process actions
+          if (message.actions[message.tick]) {
+            for (const [entityId, actions] of entries(message.actions[message.tick])) {
+              for (const action of actions) {
+                const pushed = world.actions.push(message.tick, entityId, action)
+                if (!pushed) {
+                  console.error(`action ${action.actionId} not pushed`)
+                }
+              }
+            }
+          }
+
+          // Process chats
+          if (message.chats[clientId]) {
+            world.messages.set(world.tick, clientId, message.chats[clientId])
+          }
+        }
+
+        // Re-apply missing movement
+        if (lastMessageTick[clientId] < world.tick) {
+          const player = world.entity(clientId)
+          const character = player?.components.controlling?.getCharacter(world)
+          const characterActions = world.actions.atTick(lastMessageTick[clientId])?.[character?.id ?? ""]
+          const moveAction = characterActions?.find(a => a.actionId === "move")
+          
+          if (moveAction) {
+            world.actions.push(world.tick, character!.id, { ...moveAction })
+            console.log(`RE-APPLY MISSING MOVEMENT tick:${world.tick}`)
+          }
+        }
+
+        latestClientMessages[clientId] = []
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Delay Mode">
+    ```ts
+    const readDelay = () => {
+      keys(latestClientMessages).forEach((client) => {
+        let messages: (GameData | undefined)[]
+
+        // Consume 1-2 messages per tick
+        if (latestClientMessages[client].length > 2) {
+          messages = [latestClientMessages[client][0], latestClientMessages[client][1]]
+          latestClientMessages[client].shift()
+          latestClientMessages[client].shift()
+        } else {
+          messages = [latestClientMessages[client][0]]
+          latestClientMessages[client].shift()
+        }
+
+        messages.forEach((message) => {
+          if (!message || message.type !== "game") return
+
+          // Process actions
+          if (message.actions?.[message.tick]) {
+            entries(message.actions[message.tick]).forEach(([entityId, actions]) => {
+              actions.forEach((action) => {
+                world.actions.push(world.tick, entityId, action)
+              })
+            })
+          }
+
+          // Process chats
+          if (message.chats[client]) {
+            world.messages.set(world.tick, client, message.chats[client])
+          }
+        })
+      })
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Write: Broadcast Game State
+
+```ts
+const write = () => {
+  // Build tick data
+  const tickData: NetMessageTypes = {
+    actions: world.actions.fromTick(world.tick),
+    chats: world.messages.atTick(world.tick) ?? {},
+    game: world.game.id,
+    playerId: "server",
+    serializedEntities: world.entitiesAtTick[world.tick] ?? {},
+    tick: world.tick,
+    timestamp: Date.now(),
+    type: "game"
+  }
+
+  // Send to all clients with their latency info
+  for (const [id, client] of entries(clients)) {
+    const payload = encode({
+      ...tickData, 
+      latency: latestClientLag[id],  // Round-trip time
+      diff: latestClientDiff[id]      // Tick difference
+    })
+    client.send(payload)
+  }
+}
+```
+
+## Authentication
+
+### Google OAuth
+
+```ts
+import { OAuth2Client } from "google-auth-library"
+
+const google = new OAuth2Client(
+  "1064669120093-9727dqiidriqmrn0tlpr5j37oefqdam3.apps.googleusercontent.com"
+)
+
+"auth/login": async ({ ws, data }) => {
+  // Verify Google JWT
+  const ticket = await google.verifyIdToken({
+    idToken: data.jwt,
+    audience: "..."
+  })
+
+  const { sub } = ticket.getPayload() ?? {}
+  if (!sub) return { id: data.id, error: "google Auth failed" }
+
+  // Find or create user
+  let user = await prisma.users.findUnique({ where: { googleId: sub } })
+  let newUser = !user
+
+  if (user) {
+    ws.data.playerName = user.name
+  }
+
+  // Create session token
+  const token = jwt.sign({ googleId: sub }, JWT_SECRET, { expiresIn: "8h" })
+
+  return { id: data.id, token, newUser }
+}
+```
+
+### Discord OAuth
+
+```ts
+// Discord login endpoint
+if (url.pathname === "/discord/login") {
+  const code = url.searchParams.get("code")
+
+  const response = await fetch('https://discord.com/api/oauth2/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: "1433003541521236100",
+      client_secret: DISCORD_SECRET,
+      grant_type: 'authorization_code'
+    })
+  })
+
+  const { access_token } = await response.json()
+
+  return HttpOk(origin, { access_token }, { 
+    "Set-Cookie": DiscordCookie(access_token) 
+  })
+}
+```
+
+## Database (Prisma)
+
+The server uses Prisma for user profiles and friends:
+
+```ts
+import { PrismaClient } from "@piggo-gg/server"
+
+const prisma = new PrismaClient()
+
+// Create user profile
+await prisma.users.create({
+  data: { name: data.name, googleId: token.googleId }
+})
+
+// Add friend
+await prisma.friends.create({
+  data: {
+    user1: { connect: { googleId: token.googleId } },
+    user2: { connect: { name: data.name } },
+    status: "PENDING"
+  }
+})
+```
+
+## CORS and Security
+
+```ts
+const ValidOrigins = [
+  "http://localhost:5173",
+  "https://piggo.gg",
+  "https://dev.piggo.gg",
+  `https://${DiscordDomain}`
+]
+
+// Validate origin
+let origin = r.headers.get("origin")
+if (!origin || !ValidOrigins.includes(origin)) {
+  return HttpError(403, "invalid origin", origin ?? "")
+}
+
+// Handle CORS preflight
+if (r.method === "OPTIONS") return HttpOk(origin)
+```
+
+## Lobby Cleanup
+
+Empty lobbies are automatically cleaned up:
+
+```ts
+setInterval(() => {
+  for (const [id, world] of entries(api.worlds)) {
+    // Remove empty worlds
+    if (keys(world.clients).length === 0) {
+      delete api.worlds[id]
+    }
+  }
+}, 2000)
+```
+
+## Environment Configuration
+
+```ts
+// Bun server configuration
+api.bun = Bun.serve({
+  hostname: "0.0.0.0",
+  port: env.PORT ?? 3000,
+  fetch: async (r: Request, server: Server) => {
+    // HTTP/WebSocket upgrade logic
+  },
+  websocket: {
+    perMessageDeflate: false,  // Disable compression for speed
+    close: api.handleClose,
+    open: api.handleOpen,
+    message: api.handleMessage
+  }
+})
+```
+
+## Deployment
+
+The server is deployed on Railway with environment variables:
+
+```bash
+PORT=3000
+DATABASE_URL=postgresql://...
+JWT_SECRET=...
+DISCORD_SECRET=...
+NODE_ENV=production
+```
+
+## Source Reference
+
+- ServerWorld: `server/src/ServerWorld.ts`
+- API implementation: `server/src/Api.ts`
+- NetServerSystem: `core/src/ecs/systems/net/NetServerSystem.ts`
+- Database schema: `server/src/db/schema.prisma`

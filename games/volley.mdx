@@ -1,0 +1,501 @@
+---
+title: 'Volley'
+description: 'Fast-paced 2v2 volleyball with physics-based gameplay'
+---
+
+Volley is a competitive 2v2 volleyball game featuring physics-based ball mechanics, team-based scoring, and bot opponents.
+
+## Gameplay
+
+- **Teams**: 2v2 (Team 1 vs Team 2)
+- **Objective**: Hit the ball over the net to score points
+- **Win Condition**: First to 7 points
+- **Mechanics**: Jump serves, spike attacks, 3-hit limit per team
+- **Bots**: AI players fill empty slots
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/volley/Volley.ts:33`
+
+```typescript
+export const Volley: GameBuilder<VolleyState, VolleySettings> = {
+  id: "volley",
+  init: (world) => ({
+    id: "volley",
+    netcode: "rollback",
+    renderer: "pixi",
+    settings: {
+      showControls: true
+    },
+    state: {
+      hit: 0,
+      jumpHits: [],
+      lastHit: "",
+      lastHitTeam: 0,
+      lastHitTick: 0,
+      lastWin: 0,
+      lastWinTick: 0,
+      phase: "point",
+      scoreLeft: 0,
+      scoreRight: 0,
+      teamServing: 1
+    },
+    systems: [
+      PhysicsSystem("local"),
+      PhysicsSystem("global"),
+      SpawnSystem({ spawner: Vince, pos: { x: 8, y: 8, z: 2 } }),
+      VolleySystem,
+      ShadowSystem,
+      PixiRenderSystem,
+      PixiNametagSystem(),
+      HUDSystem(controls),
+      PixiCameraSystem({
+        follow: () => ({ x: 225, y: 0, z: 0 }),
+        resize: () => {
+          const { w } = screenWH()
+          return Math.min(3.4, w / (550 * 1.1))
+        }
+      }),
+      PixiDebugSystem
+    ],
+    entities: [
+      Background({ rays: true }),
+      Cursor(),
+      Ball(),
+      Court(),
+      Centerline(),
+      PostTop(),
+      PostBottom(),
+      Net(),
+      Bounds("2"),
+      Bounds("3"),
+      Target(),
+      ScorePanel(),
+      HtmlChat(),
+      EscapeMenu(world),
+      HtmlLagText(),
+      HtmlFpsText()
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type VolleyState = {
+  hit: 0 | 1 | 2 | 3 | 4              // Consecutive hits by same team
+  jumpHits: string[]                  // Players who hit while airborne
+  lastHit: string                     // Last player to touch ball
+  lastHitTeam: 0 | 1 | 2             // Last team to touch ball
+  lastHitTick: number                 // Tick of last hit
+  lastWin: 0 | 1 | 2                 // Team that won last point
+  lastWinTick: number                 // Tick of last point scored
+  phase: "serve" | "play" | "point" | "game"
+  scoreLeft: number                   // Team 1 score
+  scoreRight: number                  // Team 2 score
+  teamServing: 1 | 2                 // Which team serves next
+}
+```
+
+### Settings
+
+```typescript
+export type VolleySettings = {
+  showControls: boolean
+}
+```
+
+## Systems
+
+### VolleySystem
+
+Location: `core/src/games/volley/Volley.ts:96`
+
+Manages game flow, bot spawning, and scoring:
+
+```typescript
+const VolleySystem = SystemBuilder({
+  id: "VolleySystem",
+  init: (world) => {
+    const bots: Record<string, Entity<Position | Team>> = {}
+    const mobileUI = MobileUI(world)
+
+    // Spawn bots to fill teams to 2v2
+    const players = world.queryEntities<Team>(["pc", "team"])
+    if (players.length < 4) {
+      // Add bots for missing players
+    }
+
+    return {
+      id: "VolleySystem",
+      query: [],
+      priority: 9,
+      onTick: () => {
+        // Reset jump hit tracking
+        // Handle point scoring
+        // Manage serve phase
+        // Position players on correct side
+        // Dynamic bot spawning/despawning
+      }
+    }
+  }
+})
+```
+
+### Physics Systems
+
+Location: `core/src/games/volley/Volley.ts:56-57`
+
+- `PhysicsSystem("local")` - Client-side prediction
+- `PhysicsSystem("global")` - Networked entities
+
+## Entities
+
+### Vince (Player Character)
+
+Location: `core/src/games/volley/Vince.ts:8`
+
+```typescript
+export const Vince = (player: Player) => Character({
+  id: `vince-${player.id}`,
+  components: {
+    position: Position({
+      y: 0, 
+      x: player.components.team.data.team === 1 ? 0 : 400,
+      velocityResets: 1, 
+      speed: 125, 
+      gravity: 0.3
+    }),
+    networked: Networked(),
+    collider: Collider({ shape: "ball", radius: 4, group: "notme1" }),
+    team: Team(player.components.team.data.team),
+    input: Input({
+      joystick: ({ client, character }) => {
+        // Mobile joystick movement
+      },
+      press: {
+        ...WASDInputMap.press,
+        " ": () => ({ actionId: "jump" }),
+        "mb1": ({ mouse, world, entity }) => {
+          // Spike action
+          const target = { x: mouse.x, y: mouse.y }
+          world.actions.push(world.tick + 3, entity.id, { 
+            actionId: "spike", 
+            params: { from, target } 
+          })
+        },
+        "t": () => {
+          // Switch teams
+        }
+      }
+    }),
+    actions: Actions({
+      move: Move,
+      spike: Spike(),
+      jump: Action("jump", ({ entity }) => {
+        if (!entity.components.position.data.standing) return
+        entity.components.position.setVelocity({ z: 6 })
+      }),
+      changeSkin: ChangeSkin
+    }),
+    shadow: Shadow(5),
+    renderable: Renderable({
+      anchor: { x: 0.55, y: 0.9 },
+      scale: 1.2,
+      zIndex: 4,
+      interpolate: true,
+      scaleMode: "nearest",
+      setup: async (r) => {
+        await PixiSkins["dude-white"](r)
+      },
+      animationSelect: VolleyCharacterAnimations,
+      onTick: VolleyCharacterDynamic
+    })
+  }
+})
+```
+
+**Components:**
+- `Position` - 125 speed, 0.3 gravity
+- `Collider` - Ball shape, radius 4
+- `Input` - WASD + Space + Mouse
+- `Actions` - Move, Jump, Spike
+- `Renderable` - Pixi sprite with animations
+
+### Ball
+
+Location: `core/src/games/volley/entities.ts`
+
+Physics-enabled volleyball:
+
+```typescript
+export const Ball = () => Entity({
+  id: "ball",
+  components: {
+    position: Position({
+      x: 10, y: 1, z: 50,
+      gravity: 0.3,
+      velocityResets: 0
+    }),
+    collider: Collider({ 
+      shape: "ball", 
+      radius: 5, 
+      group: "2" 
+    }),
+    networked: Networked(),
+    renderable: Renderable({
+      zIndex: 3,
+      anchor: { x: 0.5, y: 0.9 },
+      scale: 2.4,
+      sprite: "volleyball"
+    })
+  }
+})
+```
+
+### Court Elements
+
+- **Court** - Playing surface
+- **Centerline** - Divides teams
+- **Net** - Middle barrier (collider)
+- **PostTop/PostBottom** - Net posts
+- **Bounds** - Out-of-bounds areas
+- **Target** - Visual aiming indicator
+
+### Bot
+
+Location: `core/src/games/volley/Bot.ts`
+
+AI-controlled player:
+
+```typescript
+export const Bot = (team: 1 | 2, pos: XY) => {
+  const bot = Vince(botPlayer)
+  
+  // Override with NPC behavior
+  bot.components.npc = NPC({
+    behavior: (entity, world) => {
+      // AI logic for movement and spiking
+      // Track ball position
+      // Move toward ball or defensive position
+      // Spike when close enough
+    }
+  })
+  
+  return bot
+}
+```
+
+## Game Phases
+
+### Serve Phase
+
+Location: `core/src/games/volley/Volley.ts:185`
+
+```typescript
+if (state.phase === "serve" && state.hit === 0) {
+  // Position players on correct side
+  // Spawn/despawn bots dynamically
+  // Ball floats at serving position
+  // Reset hit counter
+}
+```
+
+### Play Phase
+
+Location: `core/src/games/volley/Volley.ts:238`
+
+```typescript
+if (state.phase === "play" || state.phase === "serve") {
+  if (ballPos.data.z === 0) {
+    // Ball landed - award point
+    state.phase = "point"
+    state.lastWin = (ballPos.data.x < 225) ? 2 : 1
+  }
+  
+  // Highlight last hitter with glow effect
+  for (const character of characters) {
+    if (character.id === state.lastHit) {
+      renderable.setGlow({ color: 0xffffff, outerStrength: 3 })
+    }
+  }
+}
+```
+
+### Point Phase
+
+Location: `core/src/games/volley/Volley.ts:154`
+
+```typescript
+if (state.phase === "point") {
+  // Wait for ball to land
+  if (ballPos.data.z > 0) return
+
+  state.lastWinTick = world.tick
+
+  // Update score
+  if (state.lastWin === 1) state.scoreLeft++
+  if (state.lastWin === 2) state.scoreRight++
+  state.teamServing = state.lastWin === 2 ? 2 : 1
+
+  // Reset to 0-0 if either team reaches 7
+  if (state.scoreLeft >= 7 || state.scoreRight >= 7) {
+    state.scoreLeft = 0
+    state.scoreRight = 0
+  }
+
+  // Transition to serve
+  state.phase = "serve"
+  state.lastHit = ""
+  state.lastHitTeam = 0
+  state.hit = 0
+
+  // Reset ball
+  ballPos.setVelocity({ x: 0, y: 0, z: 0 })
+  ballPos.setRotation(0)
+  ballPos.setGravity(0)
+  ballPos.setPosition({
+    x: state.teamServing === 1 ? 10 : 400,
+    y: 1, z: 50
+  })
+}
+```
+
+## Actions
+
+### Spike
+
+Location: `core/src/games/volley/Spike.ts`
+
+Hit the ball toward target:
+
+```typescript
+export const Spike = () => Action("spike", ({ entity, world, params }) => {
+  const { position } = entity.components
+  const state = world.state<VolleyState>()
+  
+  // Track consecutive hits
+  if (state.lastHitTeam === team) {
+    state.hit++
+    if (state.hit > 3) return // Max 3 hits per team
+  } else {
+    state.hit = 1
+  }
+  
+  // Track jump hits (can't hit twice while airborne)
+  if (!position.data.standing) {
+    if (state.jumpHits.includes(entity.id)) return
+    state.jumpHits.push(entity.id)
+  }
+  
+  // Calculate velocity toward target
+  const dx = params.target.x - ballPos.data.x
+  const dy = params.target.y - ballPos.data.y
+  const distance = hypot(dx, dy)
+  
+  const speed = 400 // Base spike speed
+  ballPos.setVelocity({
+    x: (dx / distance) * speed,
+    y: (dy / distance) * speed,
+    z: calculateZ(distance) // Lob height based on distance
+  })
+  
+  state.lastHit = entity.id
+  state.lastHitTeam = team
+  state.lastHitTick = world.tick
+})
+```
+
+## Controls
+
+Location: `core/src/games/volley/Volley.ts:259`
+
+```typescript
+const controls: HUDSystemProps = {
+  direction: "row",
+  clusters: [
+    {
+      label: "move",
+      buttons: [["A", "S", "D"], ["W"]]
+    },
+    {
+      label: "jump",
+      buttons: [["spacebar"]]
+    },
+    {
+      label: "hit",
+      buttons: [["mb1"]]
+    },
+    {
+      label: "switch team",
+      buttons: [["t"]]
+    },
+    {
+      label: "menu",
+      buttons: [["esc"]]
+    }
+  ]
+}
+```
+
+## Mobile Support
+
+Location: `core/src/games/volley/MobileUI.ts`
+
+Touch controls for mobile devices:
+- Left joystick for movement
+- Jump button
+- Spike button (auto-aims)
+
+## Key Features
+
+### Rollback Netcode
+
+Volley uses rollback for competitive play:
+- Low-latency input
+- Client-side prediction
+- State reconciliation
+
+### Dynamic Bot Management
+
+Bots automatically fill teams:
+- Spawn when players < 4
+- Despawn when players join
+- Maintain 2v2 balance
+
+### Physics-Based Ball
+
+- Gravity: 0.3
+- Collision with net
+- Rotation based on velocity
+- Bounce mechanics
+
+### Visual Feedback
+
+- Glow effect on last hitter
+- Shadows under characters
+- Score panel
+- Target aiming indicator
+
+## Related Files
+
+- `Vince.ts` - Player character
+- `Bot.ts` - AI opponent
+- `Spike.ts` - Ball hitting action
+- `Target.ts` - Aiming UI
+- `entities.ts` - Ball, court, net
+- `MobileUI.ts` - Touch controls
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Hoops" href="/games/hoops">
+    Similar 2v2 sports game with basketball
+  </Card>
+  <Card title="Strike" href="/games/strike">
+    Competitive FPS with rollback netcode
+  </Card>
+</CardGroup>

@@ -1,0 +1,286 @@
+---
+title: 'Lobby'
+description: 'The central hub for game selection and matchmaking'
+---
+
+The Lobby is Piggo's main menu and game selection hub. It's where players gather before starting a multiplayer session and choose which game to play.
+
+## Gameplay
+
+The Lobby provides:
+- Visual game selection with preview images
+- Player profile display with animated frames
+- Lobbies menu for joining/creating rooms
+- Online player count
+- Music controls
+- Mobile-optimized carousel interface
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/lobby/Lobby.ts:12`
+
+```typescript
+export const Lobby: GameBuilder<LobbyState> = {
+  id: "lobby",
+  init: () => ({
+    id: "lobby",
+    renderer: "pixi",
+    netcode: "delay",
+    settings: {},
+    state: {
+      starting: false
+    },
+    systems: [PixiRenderSystem],
+    entities: [
+      Background({ move: 0.5, rays: true }),
+      GameLobby(),
+      HtmlLagText(),
+      HtmlFpsText()
+    ]
+  })
+}
+```
+
+### State
+
+The lobby tracks a simple state:
+
+```typescript
+type LobbyState = {
+  starting: boolean  // Prevents double-clicking game buttons
+}
+```
+
+### Systems
+
+The lobby uses minimal systems:
+- `PixiRenderSystem` - Renders the background
+- No physics or game logic systems needed
+
+### Entities
+
+Core entities include:
+
+#### Background
+
+```typescript
+Background({ move: 0.5, rays: true })
+```
+
+Animated background with moving rays effect.
+
+#### GameLobby Entity
+
+Location: `core/src/games/lobby/Lobby.ts:487`
+
+The main lobby entity uses an NPC behavior to manage UI:
+
+```typescript
+Entity({
+  id: "gameLobby",
+  components: {
+    networked: Networked(),
+    npc: NPC({
+      behavior: (_, world) => {
+        // Initialize UI components
+        // Update lobbies menu, profile, music controls
+      }
+    })
+  }
+})
+```
+
+## UI Components
+
+### Desktop Game Selection
+
+Location: `core/src/games/lobby/Lobby.ts:41`
+
+Desktop shows a grid of game buttons:
+
+```typescript
+const GameButton = (game: GameBuilder, world: World) => {
+  return HButton({
+    style: {
+      width: "min(20vw, 180px)",
+      height: "min(19.4vw, 170px)",
+      borderRadius: "12px"
+    },
+    onClick: () => {
+      startGame(game, world, state)
+    }
+  },
+    HImg({ src: `${game.id}-256.jpg` }),
+    HText({ text: game.id })
+  )
+}
+```
+
+Features:
+- Hover effects with transform and glow
+- Game preview images (256x256)
+- Click rotation animation
+- Sound feedback
+
+### Mobile Carousel
+
+Location: `core/src/games/lobby/Lobby.ts:115`
+
+Mobile devices show a swipeable carousel:
+
+```typescript
+const MobileGamePicker = (games: GameBuilder[], world: World) => {
+  // Three-card carousel: prev, current, next
+  // Swipe gestures to navigate
+  // Tap to select, play button to confirm
+}
+```
+
+Features:
+- Touch swipe navigation
+- Card scaling and rotation effects
+- Central "play" button
+- Left/right preview cards
+
+### Profile Display
+
+Location: `core/src/games/lobby/Lobby.ts:380`
+
+Animated player profile:
+
+```typescript
+const Profile = (world: World): RefreshableDiv => ({
+  update: () => {
+    // Cycle through 4 animation frames
+    // Display player name
+  },
+  div: HButton({
+    // Animated profile frames
+    // Click for rotation effect
+  })
+})
+```
+
+### Lobbies Menu
+
+Shows available multiplayer lobbies:
+- Create new lobby
+- Join existing lobbies
+- Player count per lobby
+- Hidden in Discord embeds
+
+### Players Online
+
+Location: `core/src/games/lobby/Lobby.ts:469`
+
+Displays total online player count:
+
+```typescript
+const PlayersOnline = (world: World): RefreshableDiv => ({
+  update: () => {
+    // Poll server every 200 ticks
+    if (world.tick % 200 === 0) {
+      world.client?.metaPlayers((response) => {
+        div.textContent = `players online: ${response.online}`
+      })
+    }
+  }
+})
+```
+
+## Game Starting
+
+Location: `core/src/games/lobby/Lobby.ts:32`
+
+Only the lobby leader can start games:
+
+```typescript
+const startGame = (game: GameBuilder, world: World, state: LobbyState) => {
+  if (!world.client?.isLeader()) return
+  if (state.starting) return
+
+  world.client?.sound.play({ name: "bubble" })
+  world.actions.push(world.tick + 20, "world", { 
+    actionId: "game", 
+    params: { game: game.id } 
+  })
+  state.starting = true
+}
+```
+
+The action is delayed by 20 ticks to allow sound to play before transition.
+
+## Available Games
+
+Location: `core/src/games/lobby/Lobby.ts:489`
+
+Games shown in the lobby:
+
+```typescript
+const list: GameBuilder[] = [Build, Legends, Volley, Hoops]
+```
+
+## Browser Compatibility
+
+Location: `core/src/games/lobby/Lobby.ts:498`
+
+Safari users see a warning:
+
+```typescript
+if (getBrowser() === "safari") {
+  canvasAppend(HText({
+    text: "please use Chrome or Firefox",
+    style: { color: "red" }
+  }))
+}
+```
+
+## Key Features
+
+### Responsive Design
+
+- Desktop: Grid layout with hover effects
+- Mobile: Swipeable carousel with touch controls
+- Tablet: Optimized card sizes
+
+### Visual Polish
+
+- Smooth transitions and animations
+- Gradient borders on game cards
+- Shadow effects on hover
+- Rotation effects on click
+- Animated background rays
+
+### Multiplayer
+
+- Leader-only game starting
+- Lobby browser
+- Online player count
+- Discord integration support
+
+### Performance
+
+- Minimal systems (just rendering)
+- No physics calculations
+- Efficient UI updates
+- Lazy loading of game assets
+
+## Related Components
+
+- `Friends` component for social features
+- `LobbiesMenu` for room management  
+- `MusicButton` for audio controls
+- `Version` display for build info
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Build Game" href="/games/build">
+    Creative sandbox building game
+  </Card>
+  <Card title="Volley Game" href="/games/volley">
+    Fast-paced volleyball action
+  </Card>
+</CardGroup>

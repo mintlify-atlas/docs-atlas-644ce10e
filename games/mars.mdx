@@ -1,0 +1,542 @@
+---
+title: 'Mars'
+description: 'Rocket launching simulation with resource management'
+---
+
+Mars is a rocket launching simulation game where players manage resources, build rockets, and launch them toward Mars.
+
+## Gameplay
+
+- **Objective**: Successfully launch rockets to Mars
+- **Resources**: Money management system
+- **Time**: Date progression (days/months/years)
+- **Revenue**: FarLink income and contract payments
+- **Expenses**: Rocket component costs
+- **Launch States**: Unready, ready, firing, floating
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/mars/Mars.ts:55`
+
+```typescript
+export const Mars: GameBuilder<MarsState, MarsSettings> = {
+  id: "mars",
+  init: (world) => ({
+    id: "mars",
+    netcode: "delay",
+    renderer: "pixi",
+    settings: {
+      showControls: true
+    },
+    state: {
+      money: 0,
+      date: { day: 1, month: "Jan", year: 2026 },
+      farLinkIncome: 0,
+      contractRevenue: 0,
+      rocketComponentSpend: 0,
+      readiness: "ready"
+    },
+    systems: [
+      PixiRenderSystem,
+      PhysicsSystem("global"),
+      PhysicsSystem("local"),
+      PixiCameraSystem({
+        resize: () => screenWH().h / 936 * 2.6,
+        follow: (xyz) => xyz
+      }),
+      ShadowSystem,
+      MarsSystem,
+      HUDSystem(controls),
+      PixiDebugSystem
+    ],
+    entities: [
+      Background({ move: 0.2, rays: true, follow: false }),
+      Beach({ width: 2000, height: 400, pos: { x: 0, y: 270 } }),
+      Water2D({ pos: { x: 0, y: 90 } }),
+      Launchpad(),
+      Rail(),
+      Rocket(),
+      EscapeMenu(world),
+      Cursor(),
+      MoneyDisplay(),
+      LaunchButton(),
+      HtmlFpsText()
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type MarsState = {
+  money: number               // Available funds
+  date: Date                  // Current game date
+  farLinkIncome: number      // Passive income
+  contractRevenue: number    // Contract earnings
+  rocketComponentSpend: number  // Build costs
+  readiness: "unready" | "ready" | "firing" | "floating"
+}
+```
+
+### Settings
+
+```typescript
+export type MarsSettings = {
+  showControls: boolean
+}
+```
+
+## Systems
+
+### MarsSystem
+
+Location: `core/src/games/mars/Mars.ts:30`
+
+```typescript
+const MarsSystem = SystemBuilder({
+  id: "MarsSystem",
+  init: (world) => {
+    const mobileUI = MobileUI(world)
+    let lastDayTick = world.tick
+
+    return {
+      id: "MarsSystem",
+      query: [],
+      priority: 2,
+      onTick: () => {
+        mobileUI?.update()
+        const state = world.state<MarsState>()
+
+        // Advance time
+        if (world.tick - lastDayTick >= ticksPerDay 
+            && ["ready", "unready"].includes(state.readiness)) {
+          lastDayTick = world.tick
+          state.date = nextDay(state.date)
+        }
+      }
+    }
+  }
+})
+```
+
+Manages:
+- Day/night cycle
+- Date progression
+- Mobile UI updates
+- Time-based events
+
+## Entities
+
+### Rocket
+
+Location: `core/src/games/mars/things/Rocket.ts`
+
+Main launchable vehicle:
+
+```typescript
+export const Rocket = (): Entity => Entity({
+  id: "rocket",
+  components: {
+    position: Position({
+      x: 0, y: 200, z: 0,
+      gravity: 0
+    }),
+    networked: Networked(),
+    npc: NPC({
+      behavior: (entity, world) => {
+        const state = world.state<MarsState>()
+        
+        // Handle launch states
+        if (state.readiness === "firing") {
+          // Accelerate upward
+          entity.components.position.impulse({ z: 0.1 })
+        } else if (state.readiness === "floating") {
+          // Orbit mechanics
+        }
+      }
+    }),
+    renderable: Renderable({
+      sprite: "rocket",
+      scale: 3.0,
+      zIndex: 5
+    })
+  }
+})
+```
+
+### Launchpad
+
+Location: `core/src/games/mars/things/Launchpad.ts`
+
+Rocket launch platform:
+
+```typescript
+export const Launchpad = (): Entity => Entity({
+  id: "launchpad",
+  components: {
+    position: Position({ x: 0, y: 200, z: 0 }),
+    renderable: Renderable({
+      sprite: "launchpad",
+      scale: 2.5,
+      zIndex: 4
+    })
+  }
+})
+```
+
+### Rail
+
+Location: `core/src/games/mars/things/Rail.ts`
+
+Support structure:
+
+```typescript
+export const Rail = (): Entity => Entity({
+  id: "rail",
+  components: {
+    position: Position({ x: 0, y: 200, z: 0 }),
+    renderable: Renderable({
+      sprite: "rail",
+      scale: 2.5,
+      zIndex: 3
+    })
+  }
+})
+```
+
+### UI Entities
+
+#### MoneyDisplay
+
+Location: `core/src/games/mars/ui/MoneyDisplay.ts`
+
+Shows current funds:
+
+```typescript
+export const MoneyDisplay = (): Entity => Entity({
+  id: "money-display",
+  components: {
+    html: HtmlDiv({
+      style: {
+        position: "fixed",
+        top: "20px",
+        left: "20px",
+        fontSize: "24px",
+        color: "#00ff00",
+        fontFamily: "monospace"
+      }
+    }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        const state = world.state<MarsState>()
+        const div = entity.components.html?.div
+        if (div) {
+          div.textContent = `$${state.money.toLocaleString()}`
+        }
+      }
+    })
+  }
+})
+```
+
+#### DateDisplay
+
+Location: `core/src/games/mars/ui/DateDisplay.ts`
+
+Shows current date:
+
+```typescript
+export const DateDisplay = (): Entity => Entity({
+  id: "date-display",
+  components: {
+    html: HtmlDiv({
+      style: {
+        position: "fixed",
+        top: "60px",
+        left: "20px",
+        fontSize: "18px",
+        color: "white"
+      }
+    }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        const state = world.state<MarsState>()
+        const div = entity.components.html?.div
+        if (div) {
+          div.textContent = `${state.date.month} ${state.date.day}, ${state.date.year}`
+        }
+      }
+    })
+  }
+})
+```
+
+#### LaunchButton
+
+Location: `core/src/games/mars/ui/LaunchButton.ts`
+
+Initiate rocket launch:
+
+```typescript
+export const LaunchButton = (): Entity => Entity({
+  id: "launch-button",
+  components: {
+    html: HButton({
+      text: "LAUNCH",
+      style: {
+        position: "fixed",
+        bottom: "40px",
+        left: "50%",
+        transform: "translateX(-50%)",
+        width: "200px",
+        height: "60px",
+        fontSize: "24px",
+        backgroundColor: "#ff4444",
+        color: "white",
+        border: "3px solid white",
+        borderRadius: "10px"
+      },
+      onRelease: ({ world }) => {
+        const state = world.state<MarsState>()
+        if (state.readiness === "ready") {
+          world.actions.push(world.tick + 1, "rocket", { 
+            actionId: "launch" 
+          })
+        }
+      }
+    }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        const state = world.state<MarsState>()
+        const button = entity.components.html?.div as HTMLButtonElement
+        
+        if (button) {
+          button.disabled = state.readiness !== "ready"
+          button.style.opacity = state.readiness === "ready" ? "1" : "0.5"
+        }
+      }
+    })
+  }
+})
+```
+
+## Time System
+
+Location: `core/src/games/mars/Mars.ts:28`
+
+```typescript
+const ticksPerDay = 12
+
+// In MarsSystem.onTick:
+if (world.tick - lastDayTick >= ticksPerDay 
+    && ["ready", "unready"].includes(state.readiness)) {
+  lastDayTick = world.tick
+  state.date = nextDay(state.date)
+}
+```
+
+Time progression:
+- 12 ticks = 1 day
+- Only advances when not launching
+- Uses `nextDay` utility for date math
+
+## Resource Management
+
+### Income Sources
+
+**FarLink Income:**
+```typescript
+farLinkIncome: number  // Passive income per day/period
+```
+
+**Contract Revenue:**
+```typescript
+contractRevenue: number  // One-time payments
+```
+
+### Expenses
+
+**Rocket Components:**
+```typescript
+rocketComponentSpend: number  // Cost to build rockets
+```
+
+### Balance Tracking
+
+```typescript
+money: number  // Net funds
+
+// Update money:
+state.money += state.farLinkIncome
+state.money += state.contractRevenue
+state.money -= state.rocketComponentSpend
+```
+
+## Launch States
+
+Location: State management
+
+### Unready
+
+- Rocket being built
+- Cannot launch
+- Resources being spent
+- Time passes normally
+
+### Ready
+
+- Rocket fueled and prepared
+- Launch button enabled
+- Waiting for player input
+- Time passes normally
+
+### Firing
+
+- Rocket engines active
+- Accelerating upward
+- Time paused
+- Visual effects active
+
+### Floating
+
+- Reached orbit
+- Zero gravity
+- Mission complete
+- Waiting for reset
+
+## Camera System
+
+Location: `core/src/games/mars/Mars.ts:76`
+
+```typescript
+PixiCameraSystem({
+  resize: () => screenWH().h / 936 * 2.6,
+  follow: (xyz) => xyz  // Static camera
+})
+```
+
+Features:
+- Fixed perspective
+- Responsive zoom based on screen height
+- Wide view of launchpad area
+
+## Background
+
+Location: Entities array
+
+```typescript
+Background({ 
+  move: 0.2,      // Slow parallax
+  rays: true,     // Animated rays
+  follow: false   // Static position
+})
+```
+
+Creates:
+- Atmospheric background
+- Animated light rays
+- Depth perception
+
+## Terrain
+
+Location: Entities array
+
+```typescript
+Beach({ 
+  width: 2000, 
+  height: 400, 
+  pos: { x: 0, y: 270 } 
+})
+
+Water2D({ 
+  pos: { x: 0, y: 90 } 
+})
+```
+
+Coastal launchpad setting:
+- Wide beach area
+- Ocean water
+- Launch site on coast
+
+## Controls
+
+Location: `core/src/games/mars/Mars.ts:106`
+
+```typescript
+const controls: HUDSystemProps = {
+  clusters: [
+    {
+      label: "menu",
+      buttons: [["esc"]]
+    }
+  ]
+}
+```
+
+Minimal controls:
+- UI-driven gameplay
+- Mouse for buttons
+- Menu access
+
+## Mobile Support
+
+Location: `core/src/games/mars/MobileUI.ts`
+
+Touch-optimized interface:
+- Large launch button
+- Clear resource display
+- Tap interactions
+
+## Key Features
+
+### Simulation Focus
+
+- Resource management
+- Time progression
+- Economic system
+- Strategic decisions
+
+### Single-Player
+
+- Delay netcode (no rollback needed)
+- Solo gameplay
+- Save state friendly
+- Pauseable
+
+### Visual Feedback
+
+- Money counter
+- Date display
+- Launch effects
+- State indicators
+
+### Casual Gameplay
+
+- Simple controls
+- Clear objectives
+- Relaxing pace
+- Satisfying launches
+
+## Related Files
+
+- `Rocket.ts` - Main vehicle
+- `Launchpad.ts` - Launch platform
+- `Rail.ts` - Support structure
+- `MoneyDisplay.ts` - Resource UI
+- `DateDisplay.ts` - Time UI
+- `LaunchButton.ts` - Action button
+- `MobileUI.ts` - Touch controls
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Island" href="/games/island">
+    Another single-player game
+  </Card>
+  <Card title="Lobby" href="/games/lobby">
+    Return to game selection
+  </Card>
+</CardGroup>

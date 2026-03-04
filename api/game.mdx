@@ -1,0 +1,293 @@
+---
+title: 'Game & GameBuilder'
+description: 'Types for defining multiplayer game configurations with entities, systems, state, and settings'
+---
+
+## Overview
+
+The `Game` and `GameBuilder` types define how games are configured in Piggo. A `GameBuilder` is a factory that initializes a `Game` with its entities, systems, renderer, netcode, state, and settings. Each game in Piggo (Volley, Strike, Mars, etc.) is defined as a `GameBuilder`.
+
+## Type Signatures
+
+### Game
+
+```typescript
+export type Game<State extends NetworkedComponentData = {}, Settings extends {} = {}> = {
+  id: GameTitle
+  entities: Entity[]
+  netcode: "rollback" | "delay"
+  renderer: "three" | "pixi"
+  settings: Settings
+  state: State
+  systems: SystemBuilder[]
+}
+```
+
+<ParamField path="id" type="GameTitle" required>
+  Unique identifier for the game. Must be one of: "build", "lobby", "volley", "craft", "strike", "island", "mars", "hoops", "legends", "jam", or ""
+</ParamField>
+
+<ParamField path="entities" type="Entity[]" required>
+  Array of initial entities to spawn when the game starts (e.g., court, ball, UI elements)
+</ParamField>
+
+<ParamField path="netcode" type="'rollback' | 'delay'" required>
+  Network synchronization strategy. "rollback" provides responsive input with prediction, "delay" provides simpler but laggier experience
+</ParamField>
+
+<ParamField path="renderer" type="'three' | 'pixi'" required>
+  Graphics renderer to use. "three" for 3D games, "pixi" for 2D games
+</ParamField>
+
+<ParamField path="settings" type="Settings" required>
+  Game-specific configuration object (not synchronized over network)
+</ParamField>
+
+<ParamField path="state" type="State" required>
+  Game-specific state object synchronized across all clients. Must extend `NetworkedComponentData`
+</ParamField>
+
+<ParamField path="systems" type="SystemBuilder[]" required>
+  Array of system builders that implement game logic (e.g., physics, scoring, spawning)
+</ParamField>
+
+### GameBuilder
+
+```typescript
+export type GameBuilder<State extends NetworkedComponentData = {}, Settings extends {} = {}> = {
+  id: GameTitle
+  init: (world: World) => Game<State, Settings>
+}
+```
+
+<ParamField path="id" type="GameTitle" required>
+  Unique identifier matching the game it builds
+</ParamField>
+
+<ParamField path="init" type="(world: World) => Game<State, Settings>" required>
+  Factory function that receives the World and returns a configured Game instance
+</ParamField>
+
+## GameTitle
+
+```typescript
+export type GameTitle = 
+  | "build" 
+  | "lobby" 
+  | "volley" 
+  | "craft" 
+  | "strike" 
+  | "island" 
+  | "mars" 
+  | "hoops" 
+  | "legends" 
+  | "jam" 
+  | ""
+```
+
+Valid game identifiers. Empty string "" defaults to lobby.
+
+## Usage Examples
+
+### Defining a Simple Game
+
+```typescript
+import { GameBuilder, Entity, Background, Cursor } from "@piggo-gg/core"
+
+type MyGameState = {
+  score: number
+  round: number
+}
+
+type MyGameSettings = {
+  maxRounds: number
+}
+
+export const MyGame: GameBuilder<MyGameState, MyGameSettings> = {
+  id: "lobby", // Or your custom game title
+  init: (world) => ({
+    id: "lobby",
+    renderer: "pixi",
+    netcode: "delay",
+    settings: {
+      maxRounds: 5
+    },
+    state: {
+      score: 0,
+      round: 1
+    },
+    entities: [
+      Background({ color: 0x87CEEB }),
+      Cursor()
+    ],
+    systems: [
+      // Your systems here
+    ]
+  })
+}
+```
+
+### Volley Game Example
+
+```typescript
+import { GameBuilder, SystemBuilder } from "@piggo-gg/core"
+import { Ball, Court, Net } from "./entities"
+import { Vince } from "./Vince"
+
+export type VolleyState = {
+  hit: 0 | 1 | 2 | 3 | 4
+  jumpHits: string[]
+  lastHit: string
+  lastHitTeam: 0 | 1 | 2
+  lastHitTick: number
+  lastWin: 0 | 1 | 2
+  lastWinTick: number
+  phase: "serve" | "play" | "point" | "game"
+  scoreLeft: number
+  scoreRight: number
+  teamServing: 1 | 2
+}
+
+export type VolleySettings = {
+  showControls: boolean
+}
+
+export const Volley: GameBuilder<VolleyState, VolleySettings> = {
+  id: "volley",
+  init: (world) => ({
+    id: "volley",
+    netcode: "rollback",
+    renderer: "pixi",
+    settings: {
+      showControls: true
+    },
+    state: {
+      hit: 0,
+      jumpHits: [],
+      lastHit: "",
+      lastHitTeam: 0,
+      lastHitTick: 0,
+      lastWin: 0,
+      lastWinTick: 0,
+      phase: "point",
+      scoreLeft: 0,
+      scoreRight: 0,
+      teamServing: 1
+    },
+    entities: [
+      Background({ color: 0x87CEEB }),
+      Court(),
+      Net(),
+      Ball(),
+      Cursor(),
+      // ... more entities
+    ],
+    systems: [
+      Vince,
+      PhysicsSystem,
+      SpawnSystem,
+      // ... more systems
+    ]
+  })
+}
+```
+
+### Accessing Game State in Systems
+
+```typescript
+const ScoringSystem: SystemBuilder = {
+  id: "scoring",
+  init: (world) => ({
+    id: "scoring",
+    priority: 50,
+    query: ["position"],
+    onTick: (entities) => {
+      // Access typed game state
+      const state = world.state<VolleyState>()
+      
+      if (state.phase === "point") {
+        // Point was just scored
+        if (state.lastWin === 1) {
+          state.scoreLeft += 1
+        } else if (state.lastWin === 2) {
+          state.scoreRight += 1
+        }
+        
+        // Check for game over
+        if (state.scoreLeft >= 11 || state.scoreRight >= 11) {
+          state.phase = "game"
+        } else {
+          state.phase = "serve"
+        }
+      }
+    }
+  })
+}
+```
+
+### Using Game Settings
+
+```typescript
+const UISystem: SystemBuilder = {
+  id: "ui",
+  init: (world) => {
+    const settings = world.settings<VolleySettings>()
+    
+    return {
+      id: "ui",
+      priority: 100,
+      query: [],
+      onRender: (entities) => {
+        // Only show controls if enabled in settings
+        if (settings.showControls) {
+          // Render control hints
+        }
+      }
+    }
+  }
+}
+```
+
+### Switching Games at Runtime
+
+```typescript
+// In a menu button callback
+const playButton = HButton({
+  text: "Play Volley",
+  onClick: () => {
+    world.setGame("volley")
+  }
+})
+
+// Or from URL parameter
+const param = new URLSearchParams(window.location.search).get("game")
+if (param && param in world.games) {
+  world.setGame(param as GameTitle)
+}
+```
+
+## Notes
+
+<Note>
+  Game `state` is automatically synchronized over the network via the `gameState` entity with a `networked` component. Mutations to state are visible to all clients.
+</Note>
+
+<Note>
+  Game `settings` are local to each client and not synchronized. Use settings for client-specific preferences like graphics quality or UI toggles.
+</Note>
+
+<Note>
+  When choosing netcode: use "rollback" for fast-paced games requiring responsive input (fighting, sports). Use "delay" for slower games or when determinism is critical.
+</Note>
+
+<Note>
+  The `renderer` choice determines which systems are relevant. Three.js systems won't run in a Pixi game and vice versa. The World automatically activates/deactivates renderers when games switch.
+</Note>
+
+<Note>
+  Entities in the `entities` array are spawned when `world.setGame()` is called. Entities with `persists: true` are not removed during game transitions.
+</Note>
+
+<Note>
+  The `init` function receives the `World` instance, allowing game builders to access world state during initialization (useful for conditional setup based on client/server mode).
+</Note>

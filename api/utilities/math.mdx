@@ -1,0 +1,683 @@
+---
+title: Math Utilities
+description: Mathematical functions for vectors, physics, and geometry in Piggo Games
+---
+
+Math utilities provide core mathematical operations for game development including vector math, coordinate transformations, physics calculations, and collision detection.
+
+## Types
+
+### Position Types
+
+<ParamField path="XY" type="{ x: number, y: number }">
+  2D coordinate position
+</ParamField>
+
+<ParamField path="XZ" type="{ x: number, z: number }">
+  Horizontal plane position (used in 3D games)
+</ParamField>
+
+<ParamField path="XYZ" type="{ x: number, y: number, z: number }">
+  3D coordinate position
+</ParamField>
+
+<ParamField path="XYZR" type="{ x: number, y: number, z: number, r: number }">
+  3D position with rotation
+</ParamField>
+
+### Collision Types
+
+<ParamField path="Capsule" type="{ A: XYZ, B: XYZ, radius: number }">
+  Capsule shape defined by two endpoints and radius
+</ParamField>
+
+<ParamField path="Bounds" type="{ left: number, right: number, top: number, bottom: number }">
+  Rectangular bounds
+</ParamField>
+
+## Basic Math Functions
+
+### minmax
+
+```typescript
+minmax(n: number, minValue: number, maxValue: number): number
+```
+
+Clamps a number between minimum and maximum values.
+
+<ParamField path="n" type="number" required>
+  The value to clamp
+</ParamField>
+
+<ParamField path="minValue" type="number" required>
+  Minimum allowed value
+</ParamField>
+
+<ParamField path="maxValue" type="number" required>
+  Maximum allowed value
+</ParamField>
+
+```typescript
+const health = minmax(damage, 0, 100) // Clamp health between 0-100
+```
+
+### round
+
+```typescript
+round(n: number, places?: number): number
+```
+
+Rounds a number to specified decimal places.
+
+<ParamField path="n" type="number" required>
+  Number to round
+</ParamField>
+
+<ParamField path="places" type="number" default="0">
+  Number of decimal places
+</ParamField>
+
+```typescript
+const rounded = round(3.14159, 2) // 3.14
+```
+
+### reduce
+
+```typescript
+reduce(n: number, by: number): number
+```
+
+Reduces a number toward zero by a specified amount. Useful for friction or decay.
+
+<ParamField path="n" type="number" required>
+  Current value
+</ParamField>
+
+<ParamField path="by" type="number" required>
+  Amount to reduce by
+</ParamField>
+
+```typescript
+// Apply friction to velocity
+velocity.x = reduce(velocity.x, 0.5)
+```
+
+## Random Functions
+
+<Accordion title="Random Utilities">
+
+### randomInt
+
+```typescript
+randomInt(n: number, s?: number): number
+```
+
+Generates a random integer.
+
+<ParamField path="n" type="number" required>
+  Maximum value
+</ParamField>
+
+<ParamField path="s" type="number" default="0">
+  Shift offset
+</ParamField>
+
+### randomLR
+
+```typescript
+randomLR(scale?: number): number
+```
+
+Generates a random value between -scale/2 and scale/2. Useful for random offsets.
+
+```typescript
+const offset = randomLR(10) // Random value between -5 and 5
+```
+
+### randomChoice
+
+```typescript
+randomChoice<T>(xs: T[]): T
+```
+
+Returns a random element from an array.
+
+```typescript
+const color = randomChoice(["red", "blue", "green"])
+```
+
+</Accordion>
+
+## Vector Operations
+
+### Distance Functions
+
+<Accordion title="Distance Calculations">
+
+#### XYdistance
+
+```typescript
+XYdistance(a: XY, b: XY): number
+```
+
+Calculates Euclidean distance between two 2D points.
+
+```typescript
+const dist = XYdistance({ x: 0, y: 0 }, { x: 3, y: 4 }) // 5
+```
+
+#### XYZdistance
+
+```typescript
+XYZdistance(a: XYZ, b: XYZ): number
+```
+
+Calculates Euclidean distance between two 3D points.
+
+```typescript
+const dist = XYZdistance(playerPos, targetPos)
+```
+
+#### XYdiff / XYZdiff
+
+```typescript
+XYdiff(a: XY, b: XY, threshold?: number): boolean
+XYZdiff(a: XYZ, b: XYZ, threshold?: number): boolean
+```
+
+Checks if distance between points exceeds a threshold.
+
+```typescript
+// Used in Spike action (volley/Spike.ts:14)
+const far = XYZdiff(from, ballPos.data, range)
+if (far) return // Too far to spike
+```
+
+</Accordion>
+
+### Arithmetic Operations
+
+<Accordion title="Vector Arithmetic">
+
+#### XYZadd
+
+```typescript
+XYZadd(a: XYZ, b: XYZ): XYZ
+```
+
+Adds two 3D vectors.
+
+#### XYZsub
+
+```typescript
+XYZsub(a: XYZ, b: XYZ): XYZ
+```
+
+Subtracts vector b from vector a.
+
+#### XYZscale
+
+```typescript
+XYZscale(a: XYZ, scale: number): XYZ
+```
+
+Multiplies a vector by a scalar.
+
+#### XYZdot
+
+```typescript
+XYZdot(a: XYZ, b: XYZ): number
+```
+
+Calculates dot product of two vectors.
+
+</Accordion>
+
+### Comparison Functions
+
+<Accordion title="Vector Comparison">
+
+#### XYequal / XYZequal
+
+```typescript
+XYequal(a: XY, b: XY): boolean
+XYZequal(a: XYZ, b: XYZ): boolean
+```
+
+Checks exact equality of coordinates.
+
+#### arrayEqual
+
+```typescript
+arrayEqual<T>(a: T[], b: T[]): boolean
+```
+
+Checks if two arrays are equal.
+
+#### setsEqual
+
+```typescript
+setsEqual<T>(xs: Set<T>, ys: Set<T>): boolean
+```
+
+Checks if two sets contain the same elements.
+
+</Accordion>
+
+### Normalization
+
+<Accordion title="Vector Normalization">
+
+#### XYZnormal
+
+```typescript
+XYZnormal(xyz: XYZ): XYZ
+```
+
+Normalizes a vector using Manhattan distance (sum of absolute values).
+
+#### normalize
+
+```typescript
+normalize({ x, y, entity }: { x: number, y: number, entity: Entity<Position> }): XY
+```
+
+Normalizes velocity to match entity's speed setting.
+
+#### vectorExtend
+
+```typescript
+vectorExtend(vec: XYZ, amount: number): XYZ
+```
+
+Extends a vector by a specified amount while maintaining direction.
+
+</Accordion>
+
+## Physics Calculations
+
+### Projectile Motion
+
+<Accordion title="Ballistic Functions">
+
+#### timeToLand
+
+```typescript
+timeToLand(g: number, z: number, v: number): number
+```
+
+Calculates time until a projectile lands given gravity, height, and vertical velocity.
+
+<ParamField path="g" type="number" required>
+  Gravity constant
+</ParamField>
+
+<ParamField path="z" type="number" required>
+  Current height
+</ParamField>
+
+<ParamField path="v" type="number" required>
+  Vertical velocity
+</ParamField>
+
+#### velocityToPoint
+
+```typescript
+velocityToPoint(from: XYZ, to: XY, g: number, v: number): XY
+```
+
+Calculates horizontal velocity needed to reach a point with ballistic motion.
+
+```typescript
+// Used in Spike action (volley/Spike.ts:88)
+v = velocityToPoint(ballPos.data, target, g, vz)
+ballPos.setVelocity({ z: vz, x: v.x / 25 * 1000, y: v.y / 25 * 1000 })
+```
+
+#### velocityToDirection
+
+```typescript
+velocityToDirection(from: XYZ, to: XY, distance: number, g: number, v: number): XY
+```
+
+Calculates velocity to reach a specific distance toward a target point.
+
+```typescript
+// Used in Spike action (volley/Spike.ts:99)
+v = velocityToDirection(ballPos.data, target, 80, g, vz)
+```
+
+</Accordion>
+
+### Time and Day Cycle
+
+<Accordion title="Time Functions">
+
+#### hourness
+
+```typescript
+hourness(tick: number, delta: number): number
+```
+
+Calculates current hour in a 24-hour cycle based on game tick.
+
+#### dayness
+
+```typescript
+dayness(tick: number, delta: number): number
+```
+
+Returns daylight intensity (0-1) based on time of day. Returns 1 during daytime (hours 0-9), fades during dusk (9-12) and dawn (21-24).
+
+</Accordion>
+
+## Coordinate Transformations
+
+### Isometric Projection
+
+<Accordion title="Isometric Functions">
+
+#### worldToIsometric
+
+```typescript
+worldToIsometric({ x, y }: XY): XY
+```
+
+Converts world coordinates to isometric view.
+
+#### isometricToWorld
+
+```typescript
+isometricToWorld({ x, y }: XY): XY
+```
+
+Converts isometric coordinates back to world space.
+
+#### pointsIsometric
+
+```typescript
+pointsIsometric(points: number[][]): number[]
+```
+
+Converts array of coordinate pairs to isometric and flattens.
+
+</Accordion>
+
+### Angle Functions
+
+<Accordion title="Angle Utilities">
+
+#### angleCC
+
+```typescript
+angleCC(x: number, y: number): number
+```
+
+Calculates counter-clockwise angle in degrees from x,y coordinates.
+
+#### toOctString
+
+```typescript
+toOctString(o: Oct): OctString
+```
+
+Converts octant number (0-7) to direction string ("u", "ur", "r", "dr", "d", "dl", "l", "ul").
+
+</Accordion>
+
+### Rotation
+
+#### rotateAroundZ
+
+```typescript
+rotateAroundZ(v: XYZ, sinR: number, cosR: number): XYZ
+```
+
+Rotates a 3D vector around the Z axis.
+
+<ParamField path="v" type="XYZ" required>
+  Vector to rotate
+</ParamField>
+
+<ParamField path="sinR" type="number" required>
+  Sine of rotation angle
+</ParamField>
+
+<ParamField path="cosR" type="number" required>
+  Cosine of rotation angle
+</ParamField>
+
+## Collision Detection
+
+### Ray Intersection
+
+<Accordion title="Ray Casting Functions">
+
+#### rayCapsuleIntersect
+
+```typescript
+rayCapsuleIntersect(from: XYZ, dir: XYZ, capsule: Capsule): false | { sc: number, tc: number }
+```
+
+Tests if a ray intersects a capsule. Returns intersection parameters or false.
+
+<ParamField path="from" type="XYZ" required>
+  Ray origin
+</ParamField>
+
+<ParamField path="dir" type="XYZ" required>
+  Ray direction vector
+</ParamField>
+
+<ParamField path="capsule" type="Capsule" required>
+  Capsule shape to test
+</ParamField>
+
+#### raySphereIntersect
+
+```typescript
+raySphereIntersect(from: XYZ, dir: XYZ, C: XYZ, r: number): boolean
+```
+
+Tests if a ray intersects a sphere.
+
+<ParamField path="C" type="XYZ" required>
+  Sphere center
+</ParamField>
+
+<ParamField path="r" type="number" required>
+  Sphere radius
+</ParamField>
+
+#### rayBoxIntersect
+
+```typescript
+rayBoxIntersect(origin: XYZ, dir: XYZ, min: XYZ, max: XYZ): number | null
+```
+
+Tests if a ray intersects an axis-aligned box. Returns intersection distance or null.
+
+</Accordion>
+
+### Volume Intersection
+
+#### sphereBoxIntersect
+
+```typescript
+sphereBoxIntersect(
+  center: XYZ,
+  radius: number,
+  boxCenter: XYZ,
+  half: XYZ,
+  sinR: number,
+  cosR: number
+): boolean
+```
+
+Tests if a sphere intersects a rotated box.
+
+<ParamField path="center" type="XYZ" required>
+  Sphere center
+</ParamField>
+
+<ParamField path="radius" type="number" required>
+  Sphere radius
+</ParamField>
+
+<ParamField path="boxCenter" type="XYZ" required>
+  Box center position
+</ParamField>
+
+<ParamField path="half" type="XYZ" required>
+  Box half-extents (dimensions / 2)
+</ParamField>
+
+<ParamField path="sinR" type="number" required>
+  Sine of box rotation
+</ParamField>
+
+<ParamField path="cosR" type="number" required>
+  Cosine of box rotation
+</ParamField>
+
+## Entity Utilities
+
+### Entity Finding
+
+<Accordion title="Entity Helper Functions">
+
+#### closestEntity
+
+```typescript
+closestEntity(
+  pos: XY,
+  entities: Entity<Position>[],
+  maxDistance?: number
+): Entity<Position> | undefined
+```
+
+Finds the closest entity to a position, optionally within a maximum distance.
+
+```typescript
+const nearest = closestEntity(
+  player.components.position.data,
+  enemies,
+  100
+)
+```
+
+#### positionDelta
+
+```typescript
+positionDelta(a: Position, b: Position): number
+```
+
+Calculates distance between two Position components.
+
+</Accordion>
+
+### Helper Functions
+
+<Accordion title="Miscellaneous Utilities">
+
+#### middle
+
+```typescript
+middle(a: XY, b: XY): XY
+```
+
+Returns the midpoint between two 2D points.
+
+#### addPoints
+
+```typescript
+addPoints(
+  arr1: [number, number] | number[],
+  arr2: [number, number]
+): [number, number]
+```
+
+Adds two point arrays.
+
+#### upAndDir
+
+```typescript
+upAndDir(world: World): { up: XYZ, dir: XZ }
+```
+
+Gets camera's up vector and direction from the world.
+
+</Accordion>
+
+## Standard Math
+
+All standard `Math` methods are re-exported for convenience:
+
+```typescript
+import { abs, floor, ceil, hypot, max, min, pow, random, sign, sqrt, sin, cos, PI, asin } from "@piggo-gg/core"
+```
+
+## Usage Examples
+
+### Movement with Physics
+
+```typescript
+import { XYdistance, velocityToPoint, minmax } from "@piggo-gg/core"
+
+// Calculate velocity to throw object at target
+const from = entity.components.position.data
+const velocity = velocityToPoint(from, target, gravity, verticalSpeed)
+
+entity.components.position.setVelocity({
+  x: velocity.x,
+  y: velocity.y
+})
+```
+
+### Distance-Based Interactions
+
+```typescript
+import { XYZdistance, closestEntity } from "@piggo-gg/core"
+
+// Find nearest enemy within range
+const nearestEnemy = closestEntity(
+  player.components.position.data,
+  enemies,
+  attackRange
+)
+
+if (nearestEnemy) {
+  // Attack nearest enemy
+}
+```
+
+### Collision Detection
+
+```typescript
+import { raySphereIntersect, XYZ } from "@piggo-gg/core"
+
+const rayOrigin: XYZ = { x: 0, y: 0, z: 1 }
+const rayDir: XYZ = { x: 1, y: 0, z: 0 }
+const sphereCenter: XYZ = { x: 10, y: 0, z: 1 }
+const sphereRadius = 2
+
+if (raySphereIntersect(rayOrigin, rayDir, sphereCenter, sphereRadius)) {
+  // Ray hit the sphere
+}
+```
+
+### Random Generation
+
+```typescript
+import { randomChoice, randomInt, randomLR } from "@piggo-gg/core"
+
+// Random spawn position with offset
+const spawnX = baseX + randomLR(20)
+const spawnY = baseY + randomLR(20)
+
+// Random enemy type
+const enemyType = randomChoice(["goblin", "orc", "troll"])
+
+// Random damage variation
+const damage = baseDamage + randomInt(5)
+```

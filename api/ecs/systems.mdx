@@ -1,0 +1,497 @@
+---
+title: Systems
+description: System API reference for Piggo's ECS architecture
+---
+
+## Overview
+
+Systems are functions that run every tick to process entities with specific components. They form the logic layer of the ECS architecture.
+
+## Core Types
+
+### System
+
+```typescript
+interface System<T extends string = string> {
+  id: T
+  query: ValidComponents[]
+  priority: number
+  data?: NetworkedComponentData
+  skipOnRollback?: boolean
+  onTick?: (entities: Entity[], isRollback: boolean) => void
+  onTickEnd?: () => void
+  onRender?: (entities: Entity[], deltaMS: number, since: number) => void
+  onRollback?: () => void
+}
+```
+
+<ParamField path="id" type="string" required>
+  Unique system identifier
+</ParamField>
+
+<ParamField path="query" type="ValidComponents[]" required>
+  Component types this system processes. Only entities with ALL listed components will be passed to the system.
+</ParamField>
+
+<ParamField path="priority" type="number" required>
+  Execution order (lower runs first). Typical ranges:
+  - `0-2`: Input and network
+  - `3-6`: Gameplay logic
+  - `7-9`: Physics
+  - `10+`: Position updates
+</ParamField>
+
+<ParamField path="data" type="NetworkedComponentData">
+  Optional networked state for the system. Creates a SystemEntity automatically.
+</ParamField>
+
+<ParamField path="skipOnRollback" type="boolean" default="false">
+  If true, skip execution during rollback netcode frames
+</ParamField>
+
+<ParamField path="onTick" type="function">
+  Called every tick with matching entities
+  ```typescript
+  (entities: Entity[], isRollback: boolean) => void
+  ```
+</ParamField>
+
+<ParamField path="onTickEnd" type="function">
+  Called after all systems have run
+</ParamField>
+
+<ParamField path="onRender" type="function">
+  Called on render frames (interpolated)
+  ```typescript
+  (entities: Entity[], deltaMS: number, since: number) => void
+  ```
+</ParamField>
+
+<ParamField path="onRollback" type="function">
+  Called when rollback netcode restarts from checkpoint
+</ParamField>
+
+### SystemBuilder
+
+```typescript
+type SystemBuilder<T extends string = string> = {
+  id: T
+  init: (world: World) => System<T> | undefined
+}
+```
+
+Factory function for creating systems with access to world state.
+
+<ParamField path="id" type="string" required>
+  System identifier
+</ParamField>
+
+<ParamField path="init" type="function" required>
+  Initialize the system with world context. Return `undefined` to skip registration.
+  ```typescript
+  (world: World) => System | undefined
+  ```
+</ParamField>
+
+**Example**
+```typescript core/src/ecs/components/Controlling.ts
+export const ControlSystem = SystemBuilder({
+  id: "ControlSystem",
+  init: (world) => ({
+    id: "ControlSystem",
+    query: ["controlling"],
+    priority: 2,
+    onTick: (entities: Entity<Controlling>[]) => {
+      for (const entity of entities) {
+        const character = entity.components.controlling.getCharacter(world)
+        if (!character) entity.components.controlling.data.entityId = ""
+      }
+    }
+  })
+})
+```
+
+### ClientSystemBuilder
+
+```typescript
+ClientSystemBuilder<T>(builder: SystemBuilder<T>): SystemBuilder<T>
+```
+
+Wrapper that only initializes the system on client mode. Returns `undefined` on server.
+
+**Example**
+```typescript core/src/ecs/systems/client/InputSystem.ts
+export const InputSystem = ClientSystemBuilder({
+  id: "InputSystem",
+  init: (world) => ({
+    id: "InputSystem",
+    query: ["input"],
+    priority: 1,
+    skipOnRollback: true,
+    onTick: (entities) => {
+      // Handle keyboard/mouse input
+    }
+  })
+})
+```
+
+## Built-in Systems
+
+<Tabs>
+  <Tab title="Gameplay">
+    <AccordionGroup>
+      <Accordion title="ActionSystem" icon="bolt">
+        Executes queued actions from `world.actions`.
+
+        **Priority:** 8
+
+        **Query:** `["position"]`
+
+        **Behavior:**
+        - Processes actions for each entity at current tick
+        - Handles world commands (entityId === "world")
+        - Invokes action callbacks with entity, player, character context
+        - Resets velocity for entities with `velocityResets`
+
+        **Example**
+        ```typescript core/src/ecs/systems/gameplay/ActionSystem.ts
+        const action = actions.actionMap[invokedAction.actionId]
+        action.invoke({
+          params: invokedAction.params ?? {},
+          entity,
+          world,
+          player,
+          character
+        })
+        ```
+      </Accordion>
+
+      <Accordion title="PhysicsSystem" icon="atom">
+        Rapier2D physics simulation.
+
+        **Priority:** 7 (global) or 9 (local)
+
+        **Query:** `["position", "collider"]`
+
+        **Modes:**
+        - `global` - Authoritative physics (server/client)
+        - `local` - Client-side prediction only
+
+        **Behavior:**
+        - Creates Rapier rigid bodies and colliders
+        - Steps physics 4 times per tick
+        - Updates entity positions from physics
+        - Handles sensor callbacks
+        - Applies friction to moving entities
+
+        **Example**
+        ```typescript
+        PhysicsSystem("global")
+        PhysicsSystem("local")
+        ```
+      </Accordion>
+
+      <Accordion title="ExpiresSystem" icon="clock">
+        Removes entities after countdown expires.
+
+        **Priority:** 5
+
+        **Query:** `["expires"]`
+
+        **Behavior:**
+        - Decrements `ticksLeft` each tick
+        - Calls `onExpire()` callback
+        - Removes entity when counter reaches 0
+      </Accordion>
+
+      <Accordion title="DamageSystem" icon="heart-crack">
+        Processes damage and death.
+
+        **Priority:** 6
+
+        **Query:** `["health"]`
+
+        **Behavior:**
+        - Handles entity death when hp reaches 0
+        - Updates KDA statistics
+        - Plays death sounds
+        - Removes dead entities
+      </Accordion>
+
+      <Accordion title="CooldownSystem" icon="stopwatch">
+        Manages action cooldowns.
+
+        **Query:** `["actions"]`
+
+        **Behavior:**
+        - Tracks cooldown timers for each action
+        - Prevents actions from firing too frequently
+      </Accordion>
+
+      <Accordion title="SpawnSystem" icon="location-dot">
+        Handles player spawning and respawning.
+
+        **Behavior:**
+        - Finds spawn points
+        - Creates character entities
+        - Links players to characters
+      </Accordion>
+
+      <Accordion title="BlockPhysicsSystem" icon="cube">
+        Voxel block physics interactions.
+      </Accordion>
+
+      <Accordion title="BlockLogicSystem" icon="cubes">
+        Block placement and destruction logic.
+      </Accordion>
+    </AccordionGroup>
+  </Tab>
+
+  <Tab title="Client">
+    <AccordionGroup>
+      <Accordion title="InputSystem" icon="keyboard">
+        Processes keyboard, mouse, and joystick inputs.
+
+        **Priority:** 1
+
+        **Query:** `["input"]`
+
+        **Skip on rollback:** Yes
+
+        **Behavior:**
+        - Handles key press/release events
+        - Updates mouse position (screen and world space)
+        - Processes joystick input for mobile
+        - Invokes input handlers from `inputMap`
+        - Queues actions to `world.actions`
+        - Manages chat input
+
+        **Example usage:**
+        ```typescript core/src/ecs/entities/characters/Skelly.ts
+        input: Input({
+          press: {
+            " ": () => ({ actionId: "jump" }),
+            "r": () => ({ actionId: "jetpack" })
+          }
+        })
+        ```
+
+        See [Input Component](/api/ecs/components#input) for details.
+      </Accordion>
+
+      <Accordion title="HUDSystem" icon="display">
+        Updates HUD overlays and UI elements.
+
+        **Skip on rollback:** Yes
+
+        **Behavior:**
+        - Updates health bars
+        - Displays crosshair
+        - Shows ammo count
+        - Renders hitmarkers
+      </Accordion>
+
+      <Accordion title="CommandSystem" icon="terminal">
+        Debug command console.
+
+        **Skip on rollback:** Yes
+
+        **Behavior:**
+        - Processes slash commands
+        - Provides game state inspection
+        - Allows runtime tweaking
+      </Accordion>
+
+      <Accordion title="PixiNametags" icon="tag">
+        Renders player names above characters.
+
+        **Query:** `["position", "pc"]`
+
+        **Skip on rollback:** Yes
+
+        **Behavior:**
+        - Creates Pixi text sprites
+        - Updates positions to follow characters
+        - Shows team colors
+      </Accordion>
+    </AccordionGroup>
+  </Tab>
+
+  <Tab title="Network">
+    <AccordionGroup>
+      <Accordion title="NetClientWriteSystem" icon="arrow-up">
+        Sends client state to server.
+
+        **Priority:** 2
+
+        **Query:** `[]`
+
+        **Skip on rollback:** Yes
+
+        **Behavior:**
+        - Serializes actions and input
+        - Sends msgpack messages to server
+        - Supports delay and rollback netcode
+
+        **Example**
+        ```typescript core/src/ecs/systems/net/NetClientSystem.ts
+        onTick: () => {
+          if (client.ws.readyState === WebSocket.OPEN) {
+            const message = syncer().write(world)
+            client.ws.send(encode(message))
+          }
+        }
+        ```
+      </Accordion>
+
+      <Accordion title="NetClientReadSystem" icon="arrow-down">
+        Receives server state and applies updates.
+
+        **Priority:** 1
+
+        **Query:** `[]`
+
+        **Skip on rollback:** Yes
+
+        **Behavior:**
+        - Decodes msgpack messages from server
+        - Buffers incoming game states
+        - Applies entity updates
+        - Handles rollback reconciliation
+        - Calculates network latency
+        - Processes chat messages
+
+        **Example**
+        ```typescript core/src/ecs/systems/net/NetClientSystem.ts
+        client.ws.onmessage = (event) => {
+          const message = decode(new Uint8Array(event.data))
+          buffer.push(message)
+          client.lastMessageTick = message.tick
+        }
+        ```
+      </Accordion>
+
+      <Accordion title="NetServerSystem" icon="server">
+        Broadcasts game state to all clients.
+
+        **Behavior:**
+        - Serializes world state
+        - Sends to all connected players
+        - Handles client actions
+        - Validates input
+      </Accordion>
+    </AccordionGroup>
+  </Tab>
+</Tabs>
+
+## SystemEntity
+
+Systems with `data` automatically get a special entity to store networked state.
+
+```typescript
+SystemEntity({ systemId, data }: SystemEntityProps): Entity
+```
+
+<ParamField path="systemId" type="string" required>
+  ID of the system
+</ParamField>
+
+<ParamField path="data" type="NetworkedComponentData" required>
+  Networked data object
+</ParamField>
+
+**Example**
+```typescript
+const system = SystemBuilder({
+  id: "MySystem",
+  init: (world) => ({
+    id: "MySystem",
+    query: [],
+    priority: 5,
+    data: { counter: 0 },
+    onTick: () => {
+      const systemEntity = world.entity("SystemEntity-MySystem")
+      systemEntity.components.data.data.counter++
+    }
+  })
+})
+```
+
+## Creating Custom Systems
+
+### Basic System
+
+```typescript
+import { SystemBuilder, Entity, Position } from "@piggo-gg/core"
+
+export const GravitySystem = SystemBuilder({
+  id: "GravitySystem",
+  init: (world) => ({
+    id: "GravitySystem",
+    query: ["position"],
+    priority: 8,
+    onTick: (entities: Entity<Position>[]) => {
+      entities.forEach(entity => {
+        const { position } = entity.components
+        if (!position.data.standing) {
+          position.data.velocity.z -= position.data.gravity
+        }
+      })
+    }
+  })
+})
+```
+
+### Client-Only System
+
+```typescript
+import { ClientSystemBuilder } from "@piggo-gg/core"
+
+export const ParticleSystem = ClientSystemBuilder({
+  id: "ParticleSystem",
+  init: (world) => {
+    const particles = []
+
+    return {
+      id: "ParticleSystem",
+      query: [],
+      priority: 10,
+      skipOnRollback: true,
+      onRender: (entities, deltaMS) => {
+        particles.forEach(p => p.update(deltaMS))
+        particles = particles.filter(p => p.alive)
+      }
+    }
+  }
+})
+```
+
+### System with State
+
+```typescript
+export const WaveSystem = SystemBuilder({
+  id: "WaveSystem",
+  init: (world) => ({
+    id: "WaveSystem",
+    query: ["npc"],
+    priority: 3,
+    data: { wave: 1, enemiesLeft: 10 },
+    onTick: (entities) => {
+      const systemEntity = world.entity("SystemEntity-WaveSystem")
+      const { wave, enemiesLeft } = systemEntity.components.data.data
+
+      if (entities.length === 0 && enemiesLeft === 0) {
+        // Start next wave
+        systemEntity.components.data.set("wave", wave + 1)
+        systemEntity.components.data.set("enemiesLeft", wave * 10)
+      }
+    }
+  })
+})
+```
+
+## See Also
+
+- [Component API](/api/ecs/components) - Data structures systems process
+- [Entity API](/api/ecs/entities) - Entities passed to systems
+- [World API](/api/core/world) - System registration and execution

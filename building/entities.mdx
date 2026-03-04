@@ -1,0 +1,484 @@
+---
+title: Entities
+description: Create game objects by combining components into entities
+---
+
+## Overview
+
+Entities are uniquely identified collections of components. They represent everything in your game world: players, characters, NPCs, items, UI elements, and terrain. Entities have no logic themselves - they're simply containers for components.
+
+## Entity Structure
+
+```typescript
+export type Entity = {
+  id: string // Unique identifier
+  persists?: boolean // Survives game changes
+  components: {
+    position?: Position
+    health?: Health
+    renderable?: Renderable
+    // ... any components
+  }
+  removed: boolean // Marked for deletion
+  serialize: () => SerializedEntity
+  deserialize: (data: SerializedEntity) => void
+}
+```
+
+## Creating Entities
+
+<Steps>
+  <Step title="Basic entity">
+    ```typescript
+    import { Entity, Position, Health, Networked } from "@piggo-gg/core"
+
+    const enemy = Entity({
+      id: "enemy-1",
+      components: {
+        position: Position({ x: 100, y: 50, z: 0 }),
+        health: Health({ hp: 50, maxHp: 50 }),
+        networked: Networked()
+      }
+    })
+
+    // Add to world
+    world.addEntity(enemy)
+    ```
+  </Step>
+
+  <Step title="Persistent entity">
+    Entities with `persists: true` survive game changes:
+
+    ```typescript
+    const ui = Entity({
+      id: "hud-overlay",
+      persists: true, // Won't be removed on game change
+      components: {
+        html: Html()
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="Typed entity">
+    Define required components for type safety:
+
+    ```typescript
+    type EnemyEntity = Entity<Position | Health | Renderable>
+
+    const enemy: EnemyEntity = Entity({
+      id: "enemy-1",
+      components: {
+        position: Position({ x: 0, y: 0 }),
+        health: Health(),
+        renderable: Renderable()
+      }
+    })
+    ```
+  </Step>
+</Steps>
+
+## Character Entities
+
+Characters are playable entities controlled by players:
+
+```typescript core/src/games/island/Ian.ts
+import {
+  Character, Position, Health, Collider, Renderable,
+  Actions, Input, Inventory, Team, Shadow, Networked
+} from "@piggo-gg/core"
+
+export const Ian = (player: Player): Character => {
+  const ian = Character({
+    id: `ian-${player.id}`,
+    components: {
+      position: Position({
+        x: 0,
+        y: 0,
+        speed: 120,
+        gravity: 0.3,
+        velocityResets: 1
+      }),
+      collider: Collider({
+        shape: "ball",
+        radius: 6,
+        group: "players"
+      }),
+      health: Health({ hp: 5, maxHp: 5 }),
+      inventory: Inventory([Sword, Bow]),
+      team: Team(player.components.team.data.team),
+      shadow: Shadow(5),
+      networked: Networked(),
+      
+      // Input handling
+      input: Input({
+        press: {
+          "w": () => ({ actionId: "move", params: { x: 0, y: -1 } }),
+          "a": () => ({ actionId: "move", params: { x: -1, y: 0 } }),
+          "s": () => ({ actionId: "move", params: { x: 0, y: 1 } }),
+          "d": () => ({ actionId: "move", params: { x: 1, y: 0 } }),
+          " ": () => ({ actionId: "jump" })
+        }
+      }),
+      
+      // Available actions
+      actions: Actions({
+        move: Action<XY>("move", ({ params, entity }) => {
+          const { position } = entity.components
+          position.setVelocity({
+            x: params.x * position.data.speed,
+            y: params.y * position.data.speed
+          })
+        }),
+        jump: Action("jump", ({ entity }) => {
+          if (entity.components.position.data.standing) {
+            entity.components.position.setVelocity({ z: 5 })
+          }
+        })
+      }),
+      
+      // Rendering
+      renderable: Renderable({
+        anchor: { x: 0.55, y: 0.9 },
+        scale: 1.2,
+        zIndex: 4,
+        interpolate: true,
+        scaleMode: "nearest",
+        setup: PixiSkins["dude-white"],
+        onTick: ({ renderable }) => {
+          const { position } = ian.components
+          if (position.data.velocity.x !== 0) {
+            renderable.setScale({
+              x: position.data.facing,
+              y: 1
+            })
+          }
+        }
+      })
+    }
+  })
+
+  return ian
+}
+```
+
+## Player Entities
+
+Players are persistent entities that control characters:
+
+```typescript core/src/ecs/entities/players/Player.ts
+import {
+  Entity, PC, Controlling, Actions, Team, Networked
+} from "@piggo-gg/core"
+
+export type Player = Entity<PC | Controlling | Actions | Team>
+
+export const Player = ({ id, name, team }: PlayerProps): Player => Entity({
+  id: id,
+  persists: true, // Players survive game changes
+  components: {
+    pc: PC({ name: name ?? "noob", leader: false }),
+    controlling: Controlling(), // Links to character entity
+    team: Team(team ?? 1),
+    actions: Actions({ SwitchTeam }),
+    networked: Networked()
+  }
+})
+```
+
+## Item Entities
+
+Items are entities that can be held in inventory:
+
+```typescript core/src/ecs/actions/attacks/Blaster.ts
+import {
+  Entity, Item, Position, Actions, Input, Three, Networked
+} from "@piggo-gg/core"
+
+export const BlasterItem = ({ character }: { character: Character }) => {
+  let mesh: Object3D | undefined
+  let cooldown = -100
+
+  const item = Entity({
+    id: `blaster-${character.id}`,
+    components: {
+      position: Position(),
+      networked: Networked(),
+      
+      item: Item({
+        name: "blaster",
+        onTick: (world) => {
+          // Item update logic
+          const { recoil } = character.components.position.data
+          if (recoil > 0) {
+            character.components.position.data.recoil -= 0.04
+          }
+        }
+      }),
+      
+      input: Input({
+        press: {
+          "mb1": ({ character, world, aim, client }) => {
+            if (cooldown + 6 > world.tick) return
+            cooldown = world.tick
+            
+            return {
+              actionId: "shoot",
+              params: { aim, pos: character.components.position.xyz() }
+            }
+          }
+        }
+      }),
+      
+      actions: Actions({
+        shoot: Action<{ aim: XY, pos: XYZ }>("shoot", ({ world, params }) => {
+          // Shoot logic
+          world.client?.sound.play({ name: "deagle" })
+          
+          // Raycast and damage
+          const hit = raycast(params.pos, params.aim, world)
+          if (hit) {
+            hit.entity.components.health?.damage(25, world)
+          }
+        })
+      }),
+      
+      three: Three({
+        init: async ({ o, three }) => {
+          three.gLoader.load("gun.gltf", (gltf) => {
+            mesh = gltf.scene
+            o.push(mesh)
+          })
+        },
+        onRender: ({ world, delta }) => {
+          if (!mesh) return
+          
+          const pos = character.components.position.interpolate(world, delta)
+          const aim = character.components.position.data.aim
+          
+          mesh.position.set(pos.x, pos.z + 0.5, pos.y)
+          mesh.rotation.y = aim.x
+          mesh.rotation.x = aim.y
+        }
+      })
+    }
+  })
+
+  return item
+}
+```
+
+## UI Entities
+
+### HTML Overlay
+
+```typescript
+import { Entity, Html, HtmlDiv, HtmlText } from "@piggo-gg/core"
+
+export const Scoreboard = () => {
+  const div = HtmlDiv({
+    position: "absolute",
+    top: "20px",
+    left: "20px",
+    color: "white"
+  })
+
+  return Entity({
+    id: "scoreboard",
+    persists: true,
+    components: {
+      html: Html({
+        element: div,
+        onTick: ({ world }) => {
+          const state = world.state<GameState>()
+          div.textContent = `Score: ${state.score}`
+        }
+      })
+    }
+  })
+}
+```
+
+### 3D UI Element
+
+```typescript core/src/ecs/entities/ui/ThreeText.ts
+import { Entity, Three, Position } from "@piggo-gg/core"
+import { Mesh, MeshBasicMaterial, PlaneGeometry } from "three"
+
+export const ThreeText = ({ text, pos }: { text: string, pos: XYZ }) => {
+  return Entity({
+    id: `text-${text}`,
+    components: {
+      position: Position(pos),
+      three: Three({
+        init: async ({ o, three }) => {
+          const canvas = document.createElement('canvas')
+          const ctx = canvas.getContext('2d')!
+          ctx.font = 'bold 48px Arial'
+          ctx.fillStyle = 'white'
+          ctx.fillText(text, 10, 50)
+          
+          const texture = three.textureLoader.load(canvas.toDataURL())
+          const geometry = new PlaneGeometry(2, 0.5)
+          const material = new MeshBasicMaterial({
+            map: texture,
+            transparent: true
+          })
+          
+          const mesh = new Mesh(geometry, material)
+          o.push(mesh)
+        }
+      })
+    }
+  })
+}
+```
+
+## Terrain Entities
+
+```typescript core/src/ecs/entities/terrain/LineWall.ts
+import { Entity, Collider } from "@piggo-gg/core"
+
+export const Wall = ({ x, y, width, height }: WallProps) => {
+  return Entity({
+    id: `wall-${x}-${y}`,
+    components: {
+      collider: Collider({
+        shape: "box",
+        width,
+        height,
+        x,
+        y,
+        isStatic: true,
+        cullable: true,
+        group: "walls"
+      })
+    }
+  })
+}
+```
+
+## Entity Lifecycle
+
+<Steps>
+  <Step title="Creation">
+    ```typescript
+    const entity = Entity({ id: "test", components: {} })
+    world.addEntity(entity)
+    ```
+  </Step>
+
+  <Step title="Querying">
+    ```typescript
+    // By ID
+    const entity = world.entity("entity-123")
+    
+    // By components
+    const entities = world.queryEntities<Position | Health>(
+      ["position", "health"],
+      (e) => e.components.health.data.hp > 0
+    )
+    ```
+  </Step>
+
+  <Step title="Modification">
+    ```typescript
+    const entity = world.entity("enemy-1")
+    if (entity) {
+      entity.components.health.damage(25, world)
+      entity.components.position.setPosition({ x: 100, y: 50 })
+    }
+    ```
+  </Step>
+
+  <Step title="Removal">
+    ```typescript
+    world.removeEntity("entity-123")
+    
+    // Or mark as removed
+    entity.removed = true
+    ```
+  </Step>
+</Steps>
+
+## Entity Patterns
+
+### Factory Functions
+
+Create reusable entity templates:
+
+```typescript
+export const Zombie = (id: string, pos: XYZ): Character => {
+  return Character({
+    id: `zombie-${id}`,
+    components: {
+      position: Position(pos),
+      health: Health({ hp: 30 }),
+      collider: Collider({ shape: "ball", radius: 8 }),
+      renderable: Renderable({
+        setup: PixiSkins["zombie"],
+        scale: 1.5
+      }),
+      npc: NPC()
+    }
+  })
+}
+
+// Spawn zombies
+for (let i = 0; i < 10; i++) {
+  world.addEntity(Zombie(i.toString(), { x: i * 20, y: 0, z: 0 }))
+}
+```
+
+### Composition
+
+Build complex entities from simple parts:
+
+```typescript
+const BaseEnemy = (id: string) => Entity({
+  id,
+  components: {
+    position: Position(),
+    health: Health(),
+    collider: Collider({ shape: "ball", radius: 5 })
+  }
+})
+
+const FlyingEnemy = (id: string) => {
+  const enemy = BaseEnemy(id)
+  enemy.components.position.data.flying = true
+  enemy.components.position.data.gravity = 0
+  return enemy
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Unique IDs" icon="fingerprint">
+    Always use unique entity IDs. Include type and instance: `"enemy-1"`, `"player-abc123"`.
+  </Card>
+  <Card title="Factory pattern" icon="industry">
+    Use factory functions to create entities with consistent configurations.
+  </Card>
+  <Card title="Minimal components" icon="minimize">
+    Only add components that the entity actually needs.
+  </Card>
+  <Card title="Networked flag" icon="network-wired">
+    Add Networked() component to entities that should sync across clients.
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Components" href="/building/components" icon="cube">
+    Learn about component types
+  </Card>
+  <Card title="Actions" href="/building/actions" icon="bolt">
+    Add interactive behaviors
+  </Card>
+  <Card title="Systems" href="/building/systems" icon="gears">
+    Process entities with systems
+  </Card>
+</CardGroup>

@@ -1,0 +1,426 @@
+---
+title: Components
+description: Build reusable data containers with Components in Piggo's ECS architecture
+---
+
+## Overview
+
+Components are atomic bundles of data attached to entities. In Piggo's ECS architecture, components hold state while systems provide behavior. Components can be networked (synchronized across clients) or local (client-only).
+
+## Component Structure
+
+A component consists of:
+- A unique `type` identifier
+- Networked `data` that syncs across clients
+- Local properties and methods that don't sync
+
+```typescript
+export type Position = Component<"position", {
+  x: number
+  y: number
+  z: number
+  velocity: XYZ
+  // ... networked data
+}> & {
+  // Local properties
+  lastCollided: number
+  localVelocity: XYZ
+  
+  // Methods
+  setPosition: (pos: XYZ) => Position
+  setVelocity: (vel: XYZ) => Position
+}
+```
+
+## Built-in Components
+
+<Steps>
+  <Step title="Position Component">
+    Tracks entity location, velocity, and movement state.
+
+    ```typescript core/src/ecs/components/Position.ts
+    import { Position } from "@piggo-gg/core"
+
+    const position = Position({
+      x: 10,
+      y: 20,
+      z: 0,
+      gravity: 0.003,
+      friction: true,
+      speed: 120,
+      velocityResets: 1 // Reset velocity each tick
+    })
+
+    // Usage in systems
+    position.setPosition({ x: 100, y: 50, z: 0 })
+    position.setVelocity({ x: 5, y: 0, z: 0 })
+    position.impulse({ x: 2, y: 1 }) // Add to velocity
+    position.setHeading({ x: 200, y: 100 }) // Move toward point
+    
+    const speed = position.getSpeed()
+    const interpolated = position.interpolate(world, delta)
+    ```
+
+    **Networked data:**
+    - `x`, `y`, `z` - World position
+    - `velocity` - Current velocity vector
+    - `facing` - Direction (-1 or 1)
+    - `flying`, `swimming`, `standing` - Movement state
+    - `gravity`, `friction`, `speed` - Physics properties
+    - `heading` - Target position for pathfinding
+  </Step>
+
+  <Step title="Health Component">
+    Manages hit points, damage, and death state.
+
+    ```typescript core/src/ecs/components/Health.ts
+    import { Health } from "@piggo-gg/core"
+
+    const health = Health({
+      hp: 100,
+      maxHp: 100,
+      showHealthBar: true,
+      deathSounds: ["death1", "death2"],
+      onDamage: (damage, world) => {
+        world.client?.sound.play({ name: "hurt" })
+      }
+    })
+
+    // Usage
+    health.damage(25, world, "player-123", "shot")
+    
+    if (health.alive()) {
+      // Entity is alive
+    }
+    
+    if (health.dead()) {
+      health.revive()
+    }
+
+    // K/D/A tracking
+    health.setKDA({ k: 5, d: 2, a: 3 })
+    const kda = health.getKDA()
+    ```
+
+    **Networked data:**
+    - `hp`, `maxHp` - Current and maximum health
+    - `died` - Tick when entity died (null if alive)
+    - `diedFrom` - Entity ID that caused death
+    - `diedReason` - Cause of death
+    - `kda` - Kill/Death/Assist stats
+  </Step>
+
+  <Step title="Renderable Component">
+    Manages 2D sprite rendering with PixiJS.
+
+    ```typescript core/src/ecs/components/Renderable.ts
+    import { Renderable, PixiSkins } from "@piggo-gg/core"
+
+    const renderable = Renderable({
+      anchor: { x: 0.5, y: 0.9 },
+      scale: 1.2,
+      zIndex: 10,
+      interpolate: true,
+      scaleMode: "nearest",
+      setup: PixiSkins["dude-white"],
+      onTick: ({ world, renderable, entity }) => {
+        // Update visual state each tick
+        if (entity.components.position.data.velocity.x > 0) {
+          renderable.setScale({ x: 1, y: 1 })
+        } else {
+          renderable.setScale({ x: -1, y: 1 })
+        }
+      },
+      onRender: ({ delta, world, renderable }) => {
+        // Update visual state each frame
+      }
+    })
+
+    // Control animations
+    renderable.setAnimation("walk")
+    renderable.setAnimation("idle")
+    
+    // Visual effects
+    renderable.setGlow({ color: 0xff0000, outerStrength: 3 })
+    renderable.setBlur({ strength: 5 })
+    renderable.setOutline({ color: 0xffffff, thickness: 2 })
+    renderable.setOverlay({ color: 0xff0000, alpha: 0.5 })
+    ```
+  </Step>
+
+  <Step title="Actions Component">
+    Defines actions that can be invoked on an entity.
+
+    ```typescript core/src/ecs/components/Actions.ts
+    import { Actions, Action } from "@piggo-gg/core"
+
+    const actions = Actions({
+      shoot: Action<{ damage: number }>("shoot", ({ params, entity, world }) => {
+        // Action logic here
+        console.log(`Entity ${entity.id} shoots for ${params.damage} damage`)
+      }),
+      reload: Action("reload", ({ entity, world }) => {
+        // Reload logic
+      })
+    })
+
+    // Invoke from systems or input
+    world.actions.push(world.tick + 1, entity.id, {
+      actionId: "shoot",
+      params: { damage: 25 }
+    })
+    ```
+  </Step>
+
+  <Step title="Input Component">
+    Maps keyboard/mouse/touch input to actions.
+
+    ```typescript core/src/ecs/components/Input.ts
+    import { Input } from "@piggo-gg/core"
+
+    const input = Input({
+      press: {
+        "w": ({ world }) => ({
+          actionId: "move",
+          params: { x: 0, y: -1 }
+        }),
+        " ": ({ hold }) => {
+          if (hold) return // Ignore held keys
+          return { actionId: "jump" }
+        },
+        "mb1": ({ world, aim, client }) => {
+          if (!document.pointerLockElement && !client.mobile) return
+          return { actionId: "shoot", params: { aim } }
+        }
+      },
+      release: {
+        "escape": ({ world, client }) => {
+          world.client?.pointerLock()
+        }
+      },
+      joystick: ({ client }) => {
+        const { power, angle } = client.controls.left
+        return {
+          actionId: "moveAnalog",
+          params: { power, angle }
+        }
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="Collider Component">
+    Defines physics collision shape.
+
+    ```typescript core/src/ecs/components/Collider.ts
+    import { Collider } from "@piggo-gg/core"
+
+    // Ball collider
+    const ballCollider = Collider({
+      shape: "ball",
+      radius: 0.1,
+      group: "players",
+      cullable: true
+    })
+
+    // Box collider with sensor
+    const sensorCollider = Collider({
+      shape: "box",
+      width: 1,
+      height: 1,
+      isStatic: true,
+      sensor: (otherEntity, world) => {
+        console.log(`Entity ${otherEntity.id} entered sensor`)
+        return true // Consumed collision
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="Inventory Component">
+    Manages items and active item selection.
+
+    ```typescript core/src/ecs/components/Inventory.ts
+    import { Inventory, BlasterItem, DaggerItem } from "@piggo-gg/core"
+
+    const inventory = Inventory([BlasterItem, DaggerItem])
+
+    // Usage
+    const activeItem = inventory.activeItem(world)
+    inventory.setActiveIndex(1) // Switch to second item
+    ```
+  </Step>
+</Steps>
+
+## Creating Custom Components
+
+<Steps>
+  <Step title="Define the component type">
+    ```typescript core/src/ecs/components/Stamina.ts
+    import { Component } from "@piggo-gg/core"
+
+    export type Stamina = Component<"stamina", {
+      current: number
+      max: number
+      regenRate: number
+    }> & {
+      // Local methods
+      consume: (amount: number) => boolean
+      isFull: () => boolean
+      isEmpty: () => boolean
+    }
+    ```
+  </Step>
+
+  <Step title="Create the constructor function">
+    ```typescript
+    export type StaminaProps = {
+      max?: number
+      regenRate?: number
+    }
+
+    export const Stamina = (props: StaminaProps = {}): Stamina => {
+      const stamina: Stamina = {
+        type: "stamina",
+        data: {
+          current: props.max ?? 100,
+          max: props.max ?? 100,
+          regenRate: props.regenRate ?? 1
+        },
+        consume: (amount: number) => {
+          if (stamina.data.current < amount) return false
+          stamina.data.current -= amount
+          return true
+        },
+        isFull: () => stamina.data.current >= stamina.data.max,
+        isEmpty: () => stamina.data.current <= 0
+      }
+      return stamina
+    }
+    ```
+  </Step>
+
+  <Step title="Add to entity">
+    ```typescript
+    import { Stamina } from "./Stamina"
+
+    const character = Entity({
+      id: "player-1",
+      components: {
+        position: Position(),
+        health: Health(),
+        stamina: Stamina({ max: 150, regenRate: 2 }),
+        // ... other components
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="Create a system to manage it">
+    ```typescript
+    const StaminaSystem = SystemBuilder({
+      id: "StaminaSystem",
+      init: (world) => ({
+        id: "StaminaSystem",
+        query: ["stamina"],
+        priority: 5,
+        onTick: (entities: Entity<Stamina>[]) => {
+          for (const entity of entities) {
+            const { stamina } = entity.components
+            
+            // Regenerate stamina
+            if (!stamina.isFull()) {
+              stamina.data.current = Math.min(
+                stamina.data.max,
+                stamina.data.current + stamina.data.regenRate
+              )
+            }
+          }
+        }
+      })
+    })
+    ```
+  </Step>
+</Steps>
+
+## Component Patterns
+
+### Data Component
+
+Store arbitrary game-specific data:
+
+```typescript
+import { Data } from "@piggo-gg/core"
+
+const data = Data({
+  data: {
+    score: 0,
+    level: 1,
+    powerups: ["speed", "jump"]
+  }
+})
+```
+
+### Networked Component
+
+Mark entities for network synchronization:
+
+```typescript
+import { Networked } from "@piggo-gg/core"
+
+const networked = Networked()
+// This entity's components will sync across clients
+```
+
+### Team Component
+
+```typescript
+import { Team } from "@piggo-gg/core"
+
+const team = Team(1) // Team 1 or 2
+```
+
+## Serialization
+
+Components with networked data are automatically serialized:
+
+```typescript
+const serialized = entity.serialize()
+// { "position": { x: 10, y: 20, z: 0, ... }, "health": { hp: 75, ... } }
+
+entity.deserialize(serialized)
+// Component data restored from serialized state
+```
+
+Only properties in the `data` object are networked. Local properties and methods are client-side only.
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Single responsibility" icon="bullseye">
+    Each component should represent one aspect of an entity (position, health, etc).
+  </Card>
+  <Card title="Data over logic" icon="database">
+    Components store data. Systems contain logic that operates on that data.
+  </Card>
+  <Card title="Minimize networked data" icon="network-wired">
+    Only put data that must sync in the `data` object. Use local properties for client-side state.
+  </Card>
+  <Card title="Immutable IDs" icon="fingerprint">
+    Component type strings must be unique and never change.
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Systems" href="/building/systems" icon="gears">
+    Learn how systems operate on components
+  </Card>
+  <Card title="Entities" href="/building/entities" icon="shapes">
+    Combine components into entities
+  </Card>
+  <Card title="Actions" href="/building/actions" icon="bolt">
+    Create actions that modify components
+  </Card>
+</CardGroup>

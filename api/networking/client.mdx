@@ -1,0 +1,378 @@
+---
+title: "Client"
+description: "WebSocket client for multiplayer games with input buffering, controls, and lobby management"
+---
+
+## Overview
+
+The `Client` manages all client-side networking, player state, input handling, and communication with the Piggo server. It establishes a WebSocket connection, handles lobby operations, authentication, and manages the local player entity.
+
+## Client Type
+
+```ts
+export type Client = {
+  // Input buffers
+  bufferDown: KeyBuffer
+  bufferUp: KeyBuffer
+  bufferScroll: number
+  
+  // State
+  busy: boolean
+  chat: {
+    inputBuffer: string
+    isOpen: boolean
+  }
+  
+  // Controls
+  controls: {
+    left: { angle: number, power: number, active: boolean }
+    right: { angle: number, power: number, active: boolean }
+    mouse: XY
+    mouseScreen: XY
+    localAim: XY
+    localHit: { tick: number, headshot: boolean }
+    moveLocal: (xy: XY, flying?: boolean) => void
+  }
+  
+  // Network state
+  net: {
+    synced: boolean
+    connected: boolean
+    ms: number
+    lobbyId: string | undefined
+  }
+  
+  // Player data
+  player: Player
+  token: string | undefined
+  ws: WebSocket
+  
+  // Methods
+  isLeader: () => boolean
+  playerId: () => string
+  playerName: () => string
+  character: () => Character | undefined
+  
+  // Lobby operations
+  lobbyCreate: (game?: GameTitle, callback?: Callback<LobbyCreate>) => void
+  lobbyJoin: (lobbyId: string, callback: Callback<LobbyJoin>) => void
+  lobbyLeave: () => void
+  lobbyList: (callback: Callback<LobbyList>) => void
+  
+  // Auth operations
+  authLogin: (jwt: string, callback?: Callback<AuthLogin>) => void
+  logout: () => void
+  
+  // Profile operations
+  profileCreate: (name: string, callback: Callback) => void
+  profileGet: (callback?: Callback) => void
+  
+  // Social operations
+  friendsAdd: (name: string, callback: Callback) => void
+  friendsList: (callback: Callback<FriendsList>) => void
+}
+```
+
+## Creating a Client
+
+```ts
+import { Client, World } from "@piggo-gg/core"
+
+const world = World({ mode: "client" })
+const client = Client({ world })
+
+// Client automatically connects to server
+console.log(client.net.connected) // true when connected
+```
+
+## Environment Detection
+
+The client automatically detects the environment and connects to the appropriate server:
+
+```ts
+const servers: Record<ENV, string> = {
+  local: "ws://localhost:3000",
+  dev: "piggo-api-staging.up.railway.app",
+  production: "api.piggo.gg",
+  discord: `${DiscordDomain}/.proxy/api`
+}
+```
+
+## Lobby Management
+
+<Tabs>
+  <Tab title="Create Lobby">
+    ```ts
+    // Create a new lobby for a specific game
+    client.lobbyCreate("volley", (response) => {
+      console.log("Lobby created:", response.lobbyId)
+      // Lobby systems are automatically added to the world
+    })
+    
+    // Create lobby for current game
+    client.lobbyCreate()
+    ```
+    
+    When a lobby is created:
+    - `NetClientReadSystem` and `NetClientWriteSystem` are added to the world
+    - World tick is reset to `-100`
+    - Message buffer is cleared
+  </Tab>
+  
+  <Tab title="Join Lobby">
+    ```ts
+    client.lobbyJoin("abc123", (response) => {
+      console.log("Joined lobby")
+      // Sync with server state
+    })
+    ```
+  </Tab>
+  
+  <Tab title="Leave Lobby">
+    ```ts
+    client.lobbyLeave()
+    
+    // This will:
+    // - Remove networking systems
+    // - Remove other players from the world
+    // - Clear lobby state
+    ```
+  </Tab>
+  
+  <Tab title="List Lobbies">
+    ```ts
+    client.lobbyList((response) => {
+      for (const [id, lobby] of Object.entries(response.lobbies)) {
+        console.log(`${lobby.game}: ${lobby.players} players`)
+      }
+    })
+    ```
+  </Tab>
+</Tabs>
+
+## Input and Controls
+
+### Mouse Control
+
+```ts
+// Move camera/aim with mouse delta
+client.controls.moveLocal({ x: deltaX, y: deltaY })
+
+// Respects mouse sensitivity from world settings
+const sensitivity = world.settings<{ mouseSensitivity: number }>()
+client.controls.localAim.x -= deltaX * sensitivity.mouseSensitivity
+```
+
+### Pointer Lock
+
+```ts
+// Lock cursor for FPS controls
+client.pointerLock()
+
+// Release cursor
+client.pointerUnlock()
+```
+
+### Touch Controls (Mobile)
+
+```ts
+if (client.mobile) {
+  const isHorizontal = client.mobile.horizontal()
+  // Adjust UI layout for orientation
+}
+```
+
+## Authentication
+
+<Tabs>
+  <Tab title="Google Login">
+    ```ts
+    // Login with Google JWT
+    client.authLogin(googleJWT, (response) => {
+      if (response.newUser) {
+        // Prompt for username
+        client.profileCreate("PlayerName", () => {
+          console.log("Profile created")
+        })
+      } else {
+        // Existing user, profile loaded automatically
+        console.log("Logged in as:", client.playerName())
+      }
+    })
+    ```
+  </Tab>
+  
+  <Tab title="Discord Login">
+    ```ts
+    // Login with Discord OAuth code
+    client.discordLogin(code, (response) => {
+      console.log("Discord access token:", response.access_token)
+    })
+    
+    // Get Discord user info
+    client.discordMe(
+      (response) => {
+        console.log("Discord user:", response.username)
+      },
+      () => {
+        console.error("Not logged in to Discord")
+      }
+    )
+    ```
+  </Tab>
+  
+  <Tab title="Logout">
+    ```ts
+    // Clear token and reload page
+    client.logout()
+    ```
+  </Tab>
+</Tabs>
+
+## Network Sync Status
+
+The client tracks network synchronization status:
+
+```ts
+// Check if client is in sync with server
+if (client.net.synced) {
+  console.log("Synced with server")
+}
+
+// Latency in milliseconds
+console.log(`Ping: ${client.net.ms}ms`)
+
+// Last received message tick
+console.log(`Last message: ${client.lastMessageTick}`)
+```
+
+Sync status is updated every 200ms. A client is considered synced if it received a message within the last 60 ticks.
+
+## WebSocket Message Protocol
+
+Messages are encoded using MessagePack for efficient binary serialization:
+
+```ts
+import { encode, decode } from "@msgpack/msgpack"
+
+// Send request to server
+const requestData: RequestData = {
+  type: "request",
+  data: {
+    route: "lobby/create",
+    id: randomHash(),
+    game: "volley",
+    playerName: client.playerName()
+  }
+}
+client.ws.send(encode(requestData))
+
+// Handle response
+client.ws.addEventListener("message", (event) => {
+  const message = decode(new Uint8Array(event.data)) as NetMessageTypes
+  
+  if (message.type === "response") {
+    // Handle API response
+  } else if (message.type === "game") {
+    // Handle game tick data (processed by NetClientReadSystem)
+  }
+})
+```
+
+## Connection Management
+
+The client automatically reconnects if the connection is lost:
+
+```ts
+client.ws.onclose = () => {
+  console.error("Disconnected from server")
+  client.net.connected = false
+  
+  // Reconnect after 1 second
+  setTimeout(() => {
+    console.log("Reconnecting to server")
+    client.ws = new WebSocket(wsUrl())
+    setupWs()
+  }, 1000)
+}
+```
+
+## Player Helpers
+
+```ts
+// Get player ID
+const id = client.playerId()
+
+// Get player name
+const name = client.playerName()
+
+// Check if player is lobby leader
+if (client.isLeader()) {
+  console.log("You can start the game")
+}
+
+// Get controlled character
+const character = client.character()
+if (character) {
+  console.log("Position:", character.components.position.data)
+}
+```
+
+## Sound System
+
+The client includes a sound manager:
+
+```ts
+// Play a sound
+client.sound.play("jump")
+
+// Adjust volume
+client.sound.setVolume(0.5)
+```
+
+## Chat System
+
+```ts
+// Open chat input
+client.chat.isOpen = true
+
+// Type message
+client.chat.inputBuffer = "Hello!"
+
+// Send message (handled by game systems)
+world.messages.set(world.tick, client.playerId(), [client.chat.inputBuffer])
+client.chat.inputBuffer = ""
+client.chat.isOpen = false
+```
+
+## Integration with World
+
+```ts
+import { DefaultWorld, Client } from "@piggo-gg/core"
+
+const world = DefaultWorld({ mode: "client" })
+const client = Client({ world })
+
+// Client is attached to world
+world.client = client
+
+// Access client from systems
+const system = SystemBuilder({
+  id: "MySystem",
+  init: (world) => ({
+    id: "MySystem",
+    query: [],
+    onTick: () => {
+      const client = world.client
+      if (client?.net.synced) {
+        // Do something when synced
+      }
+    }
+  })
+})
+```
+
+## Source Reference
+
+- Client implementation: `core/src/net/Client.ts`
+- Network systems: `core/src/ecs/systems/net/NetClientSystem.ts`

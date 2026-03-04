@@ -1,0 +1,558 @@
+---
+title: Block System
+description: Voxel/block management system for building 3D terrain in Piggo Games
+---
+
+The block system provides chunk-based voxel terrain management with efficient rendering and collision detection. Used in games like Craft and Build for minecraft-style environments.
+
+## Types
+
+### Block
+
+```typescript
+type Block = XYZ & { type: number }
+```
+
+Represents a single block in 3D space.
+
+<ParamField path="x" type="number" required>
+  Block X coordinate (grid position)
+</ParamField>
+
+<ParamField path="y" type="number" required>
+  Block Y coordinate (grid position)
+</ParamField>
+
+<ParamField path="z" type="number" required>
+  Block Z coordinate (height)
+</ParamField>
+
+<ParamField path="type" type="number" required>
+  Block type ID (see BlockType)
+</ParamField>
+
+### BlockPlan
+
+```typescript
+type BlockPlan = Block[]
+```
+
+Array of blocks representing a structure or pattern (e.g., a tree).
+
+### BlockType
+
+```typescript
+type BlockType =
+  | "white" | "stone" | "grass" | "moss" | "moonrock"
+  | "asteroid" | "saphire" | "spruce" | "ruby" | "oak"
+  | "spruceLeaf" | "oakLeaf" | "marble"
+```
+
+Available block types with visual and functional properties.
+
+### BlockColor
+
+```typescript
+type BlockColor =
+  | "white" | "hotpink" | "lightpink" | "rebeccapurple" | "slategray"
+  | "chocolate" | "saddlebrown" | "cadetblue" | "cornflowerblue"
+  | "black" | "rosybrown" | "sandybrown" | "palevioletred"
+  | "mediumseagreen" | "tan" | "royalblue" | "gold"
+```
+
+CSS color names used for custom block coloring.
+
+## BlockData
+
+The main block storage and management system.
+
+```typescript
+type BlockData = {
+  coloring: Record<XYZstring, BlockColor>
+  add: (block: Block) => boolean
+  addPlan: (plan: BlockPlan) => boolean
+  clear: () => void
+  setChunk: (chunk: XY, data: string) => void
+  setType: (ijk: XYZ, type: number) => void
+  atIJK: (ijk: XYZ) => number | undefined
+  neighbors: (chunk: XY, dist?: number) => XY[]
+  invalidate: () => void
+  loadMap: (map: Record<string, string>) => void
+  remove: (xyz: XYZ) => void
+  needsUpdate: () => boolean
+  visible: (at: XY[]) => Block[]
+}
+```
+
+### Creating BlockData
+
+```typescript
+const BlockData = (): BlockData
+```
+
+Creates a new block data storage instance. Automatically manages chunks (4x4x32 blocks each).
+
+## Block Management
+
+### add
+
+```typescript
+add(block: Block): boolean
+```
+
+Adds a single block to the world. Returns true if successful, false if blocked.
+
+<ParamField path="block" type="Block" required>
+  Block to add with x, y, z coordinates and type
+</ParamField>
+
+```typescript
+world.blocks.add({ x: 10, y: 5, z: 0, type: BlockTypeInt.grass })
+```
+
+### addPlan
+
+```typescript
+addPlan(plan: BlockPlan): boolean
+```
+
+Adds multiple blocks at once from a BlockPlan. Returns true if all blocks were added successfully.
+
+```typescript
+// Add a tree structure
+const tree = BlockTree({ x: 10, y: 10, z: 5 }, 8, "oak", true)
+world.blocks.addPlan(tree)
+```
+
+### remove
+
+```typescript
+remove(xyz: XYZ): void
+```
+
+Removes a block at the specified position.
+
+<ParamField path="xyz" type="XYZ" required>
+  Coordinates of block to remove
+</ParamField>
+
+```typescript
+world.blocks.remove({ x: 10, y: 5, z: 0 })
+```
+
+### setType
+
+```typescript
+setType(ijk: XYZ, type: number): void
+```
+
+Changes the type of an existing block.
+
+```typescript
+world.blocks.setType({ x: 10, y: 5, z: 0 }, BlockTypeInt.stone)
+```
+
+### atIJK
+
+```typescript
+atIJK(ijk: XYZ): number | undefined
+```
+
+Gets the block type at specified coordinates. Returns undefined if no block exists.
+
+```typescript
+const blockType = world.blocks.atIJK({ x: 10, y: 5, z: 0 })
+if (blockType === BlockTypeInt.grass) {
+  // It's a grass block
+}
+```
+
+## Chunk Management
+
+### setChunk
+
+```typescript
+setChunk(chunk: XY, data: string): void
+```
+
+Loads a chunk from base64-encoded data. Used for map loading.
+
+<ParamField path="chunk" type="XY" required>
+  Chunk coordinates
+</ParamField>
+
+<ParamField path="data" type="string" required>
+  Base64-encoded chunk data
+</ParamField>
+
+### neighbors
+
+```typescript
+neighbors(chunk: XY, dist?: number): XY[]
+```
+
+Returns array of neighboring chunk coordinates within distance.
+
+<ParamField path="chunk" type="XY" required>
+  Center chunk
+</ParamField>
+
+<ParamField path="dist" type="number" default="1">
+  Distance in chunks
+</ParamField>
+
+```typescript
+const nearby = world.blocks.neighbors({ x: 5, y: 5 }, 2)
+```
+
+### visible
+
+```typescript
+visible(at: XY[]): Block[]
+```
+
+Returns all visible blocks (blocks with at least one exposed face) in specified chunks. Uses caching for performance.
+
+<ParamField path="at" type="XY[]" required>
+  Array of chunk coordinates to check
+</ParamField>
+
+```typescript
+// Get visible blocks around player
+const playerChunk = { x: 4, y: 4 }
+const chunks = world.blocks.neighbors(playerChunk, 24)
+const visibleBlocks = world.blocks.visible(chunks)
+```
+
+## Rendering & State
+
+### needsUpdate
+
+```typescript
+needsUpdate(): boolean
+```
+
+Checks if any chunks have been modified and need re-rendering.
+
+```typescript
+if (world.blocks.needsUpdate()) {
+  // Re-render block mesh
+}
+```
+
+### invalidate
+
+```typescript
+invalidate(): void
+```
+
+Marks all chunks as dirty, forcing re-render on next frame.
+
+### clear
+
+```typescript
+clear(): void
+```
+
+Removes all blocks and clears all data.
+
+## Block Type Conversion
+
+### BlockTypeInt
+
+```typescript
+const BlockTypeInt: Record<BlockType, number>
+```
+
+Maps block type names to integer IDs.
+
+```typescript
+const grassId = BlockTypeInt.grass // 1
+const oakId = BlockTypeInt.oak // 9
+```
+
+### BlockTypeString
+
+```typescript
+const BlockTypeString: Record<number, BlockType>
+```
+
+Maps integer IDs back to block type names.
+
+```typescript
+const typeName = BlockTypeString[1] // "grass"
+```
+
+## Block Colors
+
+### BlockColors
+
+```typescript
+const BlockColors: BlockColor[]
+```
+
+Array of all available block colors.
+
+### nextColor
+
+```typescript
+nextColor(current: BlockColor, backward?: boolean): BlockColor
+```
+
+Cycles to the next color in the palette.
+
+<ParamField path="current" type="BlockColor" required>
+  Current color
+</ParamField>
+
+<ParamField path="backward" type="boolean" default="false">
+  Cycle backwards through palette
+</ParamField>
+
+```typescript
+let color: BlockColor = "white"
+color = nextColor(color) // "hotpink"
+color = nextColor(color, true) // "white"
+```
+
+## Block Structures
+
+### BlockTree
+
+```typescript
+BlockTree(
+  xyz: XYZ,
+  height: number,
+  t: "oak" | "spruce",
+  fluffy: boolean
+): BlockPlan
+```
+
+Generates a tree structure as a BlockPlan.
+
+<ParamField path="xyz" type="XYZ" required>
+  Base position for tree trunk
+</ParamField>
+
+<ParamField path="height" type="number" required>
+  Tree height in blocks
+</ParamField>
+
+<ParamField path="t" type="'oak' | 'spruce'" required>
+  Tree wood type
+</ParamField>
+
+<ParamField path="fluffy" type="boolean" required>
+  If true, adds diagonal leaf blocks for fuller canopy
+</ParamField>
+
+```typescript
+// Generate a tall fluffy oak tree
+const tree = BlockTree(
+  { x: 20, y: 20, z: 5 },
+  12,
+  "oak",
+  true
+)
+world.blocks.addPlan(tree)
+```
+
+## Terrain Generation
+
+### spawnTerrain
+
+```typescript
+spawnTerrain(world: World, num?: number): void
+```
+
+Generates procedural terrain with noise-based height and random trees.
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+<ParamField path="num" type="number" default="10">
+  Number of chunks per dimension (creates num x num chunks)
+</ParamField>
+
+```typescript
+// Generate 10x10 chunks of terrain
+spawnTerrain(world, 10)
+```
+
+### spawnTerrainChunk
+
+```typescript
+spawnTerrainChunk(chunk: XY, world: World): void
+```
+
+Generates terrain for a single chunk with noise-based height and random tree placement.
+
+```typescript
+spawnTerrainChunk({ x: 5, y: 5 }, world)
+```
+
+### spawnFlat
+
+```typescript
+spawnFlat(world: World, chunks?: number): void
+```
+
+Generates flat terrain (single layer of blocks).
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+<ParamField path="chunks" type="number" default="10">
+  Number of chunks per dimension
+</ParamField>
+
+```typescript
+// Create flat 10x10 asteroid platform
+spawnFlat(world, 10)
+```
+
+## Block Mesh System
+
+### BlockMeshSystem
+
+```typescript
+BlockMeshSystem({ counts }: {
+  counts: Record<BlockMeshMaterials, number>
+})
+```
+
+Client system that renders blocks using instanced meshes for performance.
+
+<ParamField path="counts" type="Record<BlockMeshMaterials, number>" required>
+  Maximum instance counts per material type
+</ParamField>
+
+```typescript
+const system = BlockMeshSystem({
+  counts: {
+    grass: 10000,
+    leaf: 5000,
+    oak: 2000,
+    spruce: 2000,
+    marble: 5000
+  }
+})
+```
+
+## Usage Examples
+
+### Building Terrain
+
+```typescript
+import { BlockData, spawnTerrain } from "@piggo-gg/core"
+
+// In your game setup
+const world = World({ /* ... */ })
+world.blocks = BlockData()
+
+// Generate procedural terrain
+spawnTerrain(world, 10)
+```
+
+### Custom Structures
+
+```typescript
+import { BlockTypeInt, BlockTree } from "@piggo-gg/core"
+
+// Build a house
+const house: BlockPlan = []
+for (let x = 0; x < 5; x++) {
+  for (let z = 0; z < 3; z++) {
+    // Walls
+    if (x === 0 || x === 4) {
+      house.push({ x: baseX + x, y: baseY, z, type: BlockTypeInt.oak })
+    }
+  }
+}
+
+world.blocks.addPlan(house)
+
+// Add a tree next to it
+const tree = BlockTree(
+  { x: baseX + 6, y: baseY, z: 0 },
+  8,
+  "spruce",
+  true
+)
+world.blocks.addPlan(tree)
+```
+
+### Dynamic Block Modification
+
+```typescript
+// Breaking blocks on click
+input: Input({
+  press: {
+    "mb1": ({ mouse }) => {
+      const blockPos = worldToBlockCoords(mouse)
+      const blockType = world.blocks.atIJK(blockPos)
+      
+      if (blockType !== undefined) {
+        world.blocks.remove(blockPos)
+      }
+    },
+    "mb2": ({ mouse }) => {
+      const blockPos = worldToBlockCoords(mouse)
+      world.blocks.add({
+        ...blockPos,
+        type: BlockTypeInt.marble
+      })
+    }
+  }
+})
+```
+
+### Colored Blocks
+
+```typescript
+import { BlockTypeInt } from "@piggo-gg/core"
+
+// Place colored marble blocks
+const pos = { x: 10, y: 10, z: 0 }
+world.blocks.add({ ...pos, type: BlockTypeInt.marble })
+world.blocks.coloring[`${pos.x},${pos.y},${pos.z}`] = "hotpink"
+
+// Cycle through colors
+let currentColor: BlockColor = "white"
+currentColor = nextColor(currentColor) // Change color
+```
+
+### Loading Saved Maps
+
+```typescript
+// Save map data
+world.blocks.dump() // Logs map data to console
+
+// Load map data
+const savedMap = {
+  "0|0": "AAECAwQF...", // Base64 chunk data
+  "0|1": "BgcICQoL...",
+  // ...
+}
+
+world.blocks.loadMap(savedMap)
+```
+
+### Efficient Rendering
+
+```typescript
+// Used in BlockMeshSystem (blocks/BlockMesh.ts:66-143)
+if (world.blocks.needsUpdate()) {
+  const playerChunk = { x: 4, y: 4 }
+  const neighbors = world.blocks.neighbors(playerChunk, 24)
+  const visibleBlocks = world.blocks.visible(neighbors)
+  
+  // Render only visible blocks using instanced meshes
+  for (const block of visibleBlocks) {
+    const type = BlockTypeString[block.type]
+    // Position and render block instance
+  }
+}
+```

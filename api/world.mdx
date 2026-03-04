@@ -1,0 +1,430 @@
+---
+title: 'World'
+description: 'Core runtime that manages all game state, entities, systems, and the tick loop'
+---
+
+## Overview
+
+The `World` is the central runtime object that manages all game state in Piggo Games. It owns the tick loop, entity registry, system execution, and coordinates rendering. Every Piggo game runs inside a `World` instance.
+
+## Type Signature
+
+```typescript
+export type World = {
+  // State
+  actions: TickBuffer<InvokedAction>
+  blocks: BlockData
+  client: Client | undefined
+  commands: Record<string, Command>
+  debug: boolean
+  entities: Record<string, Entity>
+  entitiesAtTick: Record<number, Record<string, SerializedEntity>>
+  flag: "red" | "green"
+  game: Game & { started: number }
+  games: Record<GameTitle, GameBuilder>
+  lastTick: DOMHighResTimeStamp
+  messages: TickBuffer<string>
+  mode: "client" | "server"
+  physics: undefined | RapierWorld
+  pixi: PixiRenderer | undefined
+  random: Random
+  systems: Record<string, System>
+  three: ThreeRenderer | undefined
+  tick: number
+  tickrate: number
+  time: DOMHighResTimeStamp
+  trees: XYZ[]
+  visibility: Visibility
+
+  // Methods
+  addEntities: (entities: Entity[]) => void
+  addEntity: (entity: Entity, timeout?: number) => string | undefined
+  addSystemBuilders: (systemBuilders: SystemBuilder[]) => void
+  addSystems: (systems: System[]) => void
+  announce: (message: string) => void
+  authoritative: () => boolean
+  characters: () => Character[]
+  entity: <T extends ComponentTypes>(id: string) => Entity<T> | undefined
+  onTick: (_: { isRollback: boolean, force?: boolean }) => void
+  onRender: () => void
+  players: () => Player[]
+  queryEntities: <T extends ComponentTypes>(query: ValidComponents[], filter?: (entity: Entity<T>) => boolean) => Entity<T>[]
+  removeEntity: (id: string) => void
+  removeSystem: (id: string) => void
+  setGame: (game: GameTitle) => void
+  settings: <S extends {}>() => S
+  state: <S extends {}>() => S
+}
+```
+
+## Constructor
+
+```typescript
+export const World = (props: WorldProps): World
+```
+
+<ParamField path="props" type="WorldProps">
+  Configuration object for the World
+  
+  <ParamField path="commands" type="Command[]" optional>
+    Array of command definitions to register
+  </ParamField>
+  
+  <ParamField path="systems" type="SystemBuilder[]" optional>
+    Array of system builders to initialize
+  </ParamField>
+  
+  <ParamField path="three" type="ThreeRenderer" optional>
+    Three.js renderer instance
+  </ParamField>
+  
+  <ParamField path="pixi" type="PixiRenderer" optional>
+    Pixi.js renderer instance
+  </ParamField>
+  
+  <ParamField path="mode" type="'client' | 'server'" default="'client'">
+    Runtime mode - determines if Client is instantiated
+  </ParamField>
+</ParamField>
+
+## Properties
+
+### State Properties
+
+<ParamField path="tick" type="number">
+  Current tick number, incremented each game update
+</ParamField>
+
+<ParamField path="tickrate" type="number" default="25">
+  Milliseconds between ticks (40 ticks per second at default)
+</ParamField>
+
+<ParamField path="time" type="DOMHighResTimeStamp">
+  Current performance timestamp
+</ParamField>
+
+<ParamField path="mode" type="'client' | 'server'">
+  Whether this World is running in client or server mode
+</ParamField>
+
+<ParamField path="entities" type="Record<string, Entity>">
+  Registry of all active entities by ID
+</ParamField>
+
+<ParamField path="systems" type="Record<string, System>">
+  Registry of all active systems by ID
+</ParamField>
+
+<ParamField path="game" type="Game & { started: number }">
+  Currently active game configuration and start tick
+</ParamField>
+
+<ParamField path="client" type="Client | undefined">
+  Client instance (only present in client mode)
+</ParamField>
+
+<ParamField path="pixi" type="PixiRenderer | undefined">
+  Pixi.js renderer instance
+</ParamField>
+
+<ParamField path="three" type="ThreeRenderer | undefined">
+  Three.js renderer instance
+</ParamField>
+
+<ParamField path="physics" type="RapierWorld | undefined">
+  Rapier physics world instance
+</ParamField>
+
+<ParamField path="random" type="Random">
+  Deterministic random number generator
+</ParamField>
+
+<ParamField path="actions" type="TickBuffer<InvokedAction>">
+  Buffer of actions keyed by tick
+</ParamField>
+
+<ParamField path="messages" type="TickBuffer<string>">
+  Buffer of announcement messages keyed by tick
+</ParamField>
+
+<ParamField path="entitiesAtTick" type="Record<number, Record<string, SerializedEntity>>">
+  Snapshots of networked entities for rollback (last 20 ticks)
+</ParamField>
+
+<ParamField path="commands" type="Record<string, Command>">
+  Registry of available chat commands
+</ParamField>
+
+<ParamField path="flag" type="'red' | 'green'">
+  Tick execution flag - red pauses ticks
+</ParamField>
+
+<ParamField path="debug" type="boolean">
+  Debug mode flag
+</ParamField>
+
+## Methods
+
+### Entity Management
+
+<ParamField path="addEntity" type="(entity: Entity, timeout?: number) => string | undefined">
+  Adds an entity to the world. If an entity with the same ID exists, it replaces it and cleans up renderable components.
+  
+  <ResponseField name="return" type="string | undefined">
+    The entity ID
+  </ResponseField>
+</ParamField>
+
+```typescript
+// Example: Add a ball entity
+world.addEntity(Ball({ 
+  id: "ball",
+  position: { x: 0, y: 10, z: 0 }
+}))
+```
+
+<ParamField path="addEntities" type="(entities: Entity[]) => void">
+  Adds multiple entities to the world in one call
+</ParamField>
+
+```typescript
+// Example: Add multiple bots
+const bots = [
+  Bot({ id: "bot-1", team: 1 }),
+  Bot({ id: "bot-2", team: 2 })
+]
+world.addEntities(bots)
+```
+
+<ParamField path="removeEntity" type="(id: string) => void">
+  Removes an entity from the world and calls cleanup on its renderable components. Sets the entity's `removed` flag to true.
+</ParamField>
+
+```typescript
+// Example: Remove a bot when no longer needed
+world.removeEntity("bot-1")
+```
+
+<ParamField path="entity" type="<T extends ComponentTypes>(id: string) => Entity<T> | undefined">
+  Gets an entity by ID with type-safe component access
+  
+  <ResponseField name="return" type="Entity<T> | undefined">
+    The entity if found, undefined otherwise
+  </ResponseField>
+</ParamField>
+
+```typescript
+// Example: Get the ball entity with position component
+const ball = world.entity<Position>("ball")
+if (ball) {
+  const pos = ball.components.position
+}
+```
+
+<ParamField path="queryEntities" type="<T extends ComponentTypes>(query: ValidComponents[], filter?: (entity: Entity<T>) => boolean) => Entity<T>[]">
+  Queries all entities that have the specified components, with optional filter function. Results are sorted by entity ID.
+  
+  <ResponseField name="return" type="Entity<T>[]">
+    Array of matching entities
+  </ResponseField>
+</ParamField>
+
+```typescript
+// Example: Get all characters with position and team
+const characters = world.queryEntities<Position | Team>(
+  ["position", "team", "actions"]
+)
+
+// Example: Filter to only team 1
+const team1 = world.queryEntities<Team>(
+  ["team"],
+  (entity) => entity.components.team?.team === 1
+)
+```
+
+### System Management
+
+<ParamField path="addSystems" type="(systems: System[]) => void">
+  Registers multiple systems. If a system has `data`, creates a SystemEntity for it. Prevents duplicate system IDs.
+</ParamField>
+
+<ParamField path="addSystemBuilders" type="(systemBuilders: SystemBuilder[]) => void">
+  Initializes and adds systems from SystemBuilder definitions. Skips builders whose IDs already exist.
+</ParamField>
+
+<ParamField path="removeSystem" type="(id: string) => void">
+  Removes a system and its associated SystemEntity if present
+</ParamField>
+
+### Game Management
+
+<ParamField path="setGame" type="(game: GameTitle) => void">
+  Switches to a different game. Removes non-persistent entities, clears blocks, removes old systems, adds new game entities and systems, and activates the appropriate renderer.
+</ParamField>
+
+```typescript
+// Example: Switch to volley game
+world.setGame("volley")
+```
+
+<Note>
+  `setGame` triggers a full game transition including entity cleanup, system swap, and renderer activation. It also adds a black fade-in effect.
+</Note>
+
+<ParamField path="state" type="<S extends {}>() => S">
+  Gets the current game's networked state object with type safety
+  
+  <ResponseField name="return" type="S">
+    The game state object
+  </ResponseField>
+</ParamField>
+
+```typescript
+// Example: Access volley game state
+const state = world.state<VolleyState>()
+if (state.phase === "serve") {
+  // Handle serve phase
+}
+```
+
+<ParamField path="settings" type="<S extends {}>() => S">
+  Gets the current game's settings object with type safety
+  
+  <ResponseField name="return" type="S">
+    The game settings object
+  </ResponseField>
+</ParamField>
+
+```typescript
+// Example: Check mouse sensitivity setting
+const settings = world.settings<{ mouseSensitivity: number }>()
+const sensitivity = settings.mouseSensitivity
+```
+
+### Player & Character Queries
+
+<ParamField path="players" type="() => Player[]">
+  Gets all player entities (entities with "pc" component)
+  
+  <ResponseField name="return" type="Player[]">
+    Array of player entities
+  </ResponseField>
+</ParamField>
+
+```typescript
+// Example: Count active players
+const playerCount = world.players().length
+```
+
+<ParamField path="characters" type="() => Character[]">
+  Gets all character entities being controlled by players
+  
+  <ResponseField name="return" type="Character[]">
+    Array of character entities
+  </ResponseField>
+</ParamField>
+
+### Messaging
+
+<ParamField path="announce" type="(message: string) => void">
+  Broadcasts a message to all players at the next tick
+</ParamField>
+
+```typescript
+// Example: Announce game start
+world.announce("Round starting!")
+```
+
+### Utilities
+
+<ParamField path="authoritative" type="() => boolean">
+  Returns true if this World can make authoritative decisions (server mode or client without lobby)
+  
+  <ResponseField name="return" type="boolean">
+    Whether this World is authoritative
+  </ResponseField>
+</ParamField>
+
+### Tick Loop
+
+<ParamField path="onTick" type="(args: { isRollback: boolean, force?: boolean }) => void">
+  Executes one game tick. Increments tick counter, runs all systems by priority, stores entity snapshots, and schedules the next tick. Called automatically at `tickrate` interval.
+</ParamField>
+
+<Note>
+  `onTick` is called automatically and should not be invoked manually unless implementing custom netcode or testing.
+</Note>
+
+<ParamField path="onRender" type="() => void">
+  Executes one render frame. Calls `onRender` on all systems with delta time. Called by the renderer's animation loop.
+</ParamField>
+
+## Usage Examples
+
+### Creating a World
+
+```typescript
+import { World, ThreeRenderer, PixiRenderer } from "@piggo-gg/core"
+
+const world = World({
+  mode: "client",
+  three: ThreeRenderer(),
+  pixi: PixiRenderer(),
+  systems: [RandomSystem, ExpiresSystem, ControlSystem],
+  commands: [GameCommand, DebugCommand]
+})
+```
+
+### Managing Entities in a System
+
+```typescript
+const BallSystem: SystemBuilder = {
+  id: "ball",
+  init: (world) => ({
+    id: "ball",
+    priority: 50,
+    query: ["position"],
+    onTick: (entities, isRollback) => {
+      const ball = world.entity<Position>("ball")
+      if (!ball) return
+      
+      const pos = ball.components.position
+      if (pos.y < 0) {
+        // Ball hit the ground
+        world.removeEntity("ball")
+        world.announce("Point scored!")
+      }
+    }
+  })
+}
+```
+
+### Accessing Game State
+
+```typescript
+// In a system or entity callback
+const state = world.state<StrikeState>()
+if (state.phase === "buy") {
+  // Show buy menu
+} else if (state.phase === "combat") {
+  // Hide buy menu
+}
+```
+
+## Notes
+
+<Note>
+  The World constructor automatically schedules `onTick` and sets an initial game ("lobby" by default, or from URL param).
+</Note>
+
+<Note>
+  Entity snapshots in `entitiesAtTick` are kept for only the last 20 ticks to support rollback netcode while limiting memory usage.
+</Note>
+
+<Note>
+  When `mode` is "client", a `Client` instance is automatically created and attached to `world.client`.
+</Note>
+
+<Note>
+  Systems are executed in `priority` order during `onTick`. Systems with `skipOnRollback: true` are skipped during rollback ticks.
+</Note>

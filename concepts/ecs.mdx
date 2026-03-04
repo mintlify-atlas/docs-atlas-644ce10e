@@ -1,0 +1,431 @@
+---
+title: Entity-Component-System
+description: Understanding Piggo's ECS architecture for game objects and logic
+---
+
+## What is ECS?
+
+Piggo uses an **Entity-Component-System (ECS)** architecture, a pattern that separates:
+
+<CardGroup cols={3}>
+  <Card title="Entities" icon="cube">
+    Unique identifiers with components
+  </Card>
+  <Card title="Components" icon="puzzle-piece">
+    Pure data containers
+  </Card>
+  <Card title="Systems" icon="gears">
+    Logic that processes entities
+  </Card>
+</CardGroup>
+
+This separation enables:
+- **Composition over inheritance** - Mix and match components
+- **Data-oriented design** - Cache-friendly iteration
+- **Network synchronization** - Serialize component state
+- **Flexibility** - Add/remove components at runtime
+
+## Entities
+
+An entity is a **uniquely identified collection of components**:
+
+```typescript
+// From: core/src/ecs/Entity.ts:22
+export type Entity<T extends ComponentTypes = ComponentTypes> = {
+  id: string
+  persists?: boolean
+  components: { [P in ComponentTypes['type']]?: Component }
+  serialize: () => SerializedEntity
+  deserialize: (serializedEntity: SerializedEntity) => void
+  removed: boolean
+}
+```
+
+### Creating Entities
+
+Use the `Entity` function with an id and components:
+
+```typescript
+// From: core/src/ecs/Entity.ts:29
+const player = Entity({
+  id: "player-abc123",
+  persists: true,  // Survives game changes
+  components: {
+    position: Position({ x: 100, y: 200, z: 0 }),
+    renderable: Renderable({ /* ... */ }),
+    health: Health({ max: 100, current: 100 }),
+    input: Input()
+  }
+})
+```
+
+### Entity Lifecycle
+
+<Steps>
+  <Step title="Creation">
+    Create an entity object with `Entity({ ... })`
+  </Step>
+  
+  <Step title="Registration">
+    Add to the world:
+    ```typescript
+    // From: core/src/runtime/World.ts:109
+    world.addEntity(player)
+    // Entity is now in world.entities["player-abc123"]
+    ```
+  </Step>
+  
+  <Step title="Processing">
+    Systems query and process the entity each tick
+  </Step>
+  
+  <Step title="Removal">
+    Remove from world:
+    ```typescript
+    // From: core/src/runtime/World.ts:127
+    world.removeEntity("player-abc123")
+    // Calls cleanup on renderable, three, html, inventory components
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Entity IDs must be unique across the entire world. Use descriptive patterns like `"player-{id}"`, `"bullet-{hash}"`, `"ball"`.
+</Warning>
+
+### Serialization
+
+Entities with a `networked` component are automatically serialized:
+
+```typescript
+// From: core/src/runtime/World.ts:204
+world.entitiesAtTick[world.tick] = {}
+for (const entityId in world.entities) {
+  if (world.entities[entityId].components.networked) {
+    world.entitiesAtTick[world.tick][entityId] = world.entities[entityId].serialize()
+  }
+}
+```
+
+## Components
+
+Components are **pure data structures** attached to entities:
+
+```typescript
+// From: core/src/ecs/Component.ts:22
+export type Component<type extends string = string, D extends NetworkedComponentData | undefined = undefined> = {
+  type: type
+  active?: boolean
+} & (D extends undefined ? {} : { data: D })
+```
+
+### Common Components
+
+<AccordionGroup>
+  <Accordion title="Position - Spatial data">
+    ```typescript
+    // From: core/src/ecs/components/Position.ts:74
+    export const Position = (props: PositionProps = {}): Position => ({
+      type: "position",
+      data: {
+        x: 0, y: 0, z: 0,
+        velocity: { x: 0, y: 0, z: 0 },
+        gravity: 0,
+        facing: 1,
+        speed: 0,
+        standing: true,
+        // ...
+      },
+      setPosition: ({ x, y, z }) => { /* ... */ },
+      setVelocity: ({ x, y, z }) => { /* ... */ },
+      impulse: ({ x, y, z }) => { /* ... */ },
+      // ...
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="Renderable - Visual representation">
+    Defines how an entity appears on screen (sprite, model, etc.)
+  </Accordion>
+  
+  <Accordion title="Collider - Physics body">
+    ```typescript
+    // From: core/src/ecs/components/Collider.ts:54
+    export type Collider = Component<"collider"> & {
+      body: RigidBody | undefined
+      bodyDesc: RigidBodyDesc
+      colliderDesc: ColliderDesc
+      shape: "ball" | "cuboid" | "line" | "ellipse"
+      radius?: number
+      width?: number
+      length?: number
+      isStatic: boolean
+      sensor: SensorCallback
+      // ...
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Health - Damage and death">
+    Stores current/max health, handles damage events
+  </Accordion>
+  
+  <Accordion title="Input - Player controls">
+    Captures keyboard, mouse, touch input
+  </Accordion>
+  
+  <Accordion title="Networked - Sync marker">
+    Marks entity for network synchronization
+  </Accordion>
+</AccordionGroup>
+
+### Creating Custom Components
+
+Follow the component pattern:
+
+```typescript
+import { Component, NetworkedComponentData } from "@piggo-gg/core"
+
+export type MyComponent = Component<"mycomponent", {
+  value: number
+  enabled: boolean
+}> & {
+  customMethod: () => void
+}
+
+export const MyComponent = (initial: number = 0): MyComponent => ({
+  type: "mycomponent",
+  data: {
+    value: initial,
+    enabled: true
+  },
+  customMethod: () => {
+    console.log("Custom logic")
+  }
+})
+```
+
+<Note>
+Component data must be serializable (primitives, arrays, plain objects). No functions or class instances!
+</Note>
+
+## Systems
+
+Systems contain **game logic** that processes entities:
+
+```typescript
+// From: core/src/ecs/System.ts:4
+export interface System<T extends string = string> {
+  id: T
+  query: ValidComponents[]      // Which components to match
+  priority: number               // Execution order (lower = earlier)
+  data?: NetworkedComponentData  // Optional networked state
+  skipOnRollback?: boolean       // Skip during rollback netcode
+  onTick?: (entities: Entity[], isRollback: boolean) => void
+  onTickEnd?: () => void
+  onRender?: (entities: Entity[], deltaMS: number, since: number) => void
+  onRollback?: () => void
+}
+```
+
+### System Builders
+
+Systems are created via `SystemBuilder` pattern:
+
+```typescript
+// From: core/src/ecs/System.ts:21
+export const SystemBuilder = <T extends string = string>(builder: SystemBuilder<T>): SystemBuilder<T> => builder
+
+// Usage:
+const MySystem = SystemBuilder({
+  id: "MySystem",
+  init: (world) => ({
+    id: "MySystem",
+    query: ["position", "velocity"],
+    priority: 5,
+    onTick: (entities) => {
+      entities.forEach(entity => {
+        const { position, velocity } = entity.components
+        // Process entity
+      })
+    }
+  })
+})
+```
+
+### System Execution Order
+
+Systems run by **priority** (lower = earlier):
+
+```typescript
+// From: core/src/runtime/World.ts:212
+values(world.systems)
+  .sort((a, b) => a.priority - b.priority)
+  .forEach((system) => {
+    system.onTick?.(filterEntities(system.query, values(world.entities)), isRollback)
+  })
+```
+
+<Tip>
+Common priority ranges:
+- **0-5**: Input and AI
+- **5-9**: Gameplay logic
+- **10+**: Physics, rendering, networking
+</Tip>
+
+### Example: Position System
+
+```typescript
+// From: core/src/ecs/components/Position.ts:278
+export const PositionSystem = SystemBuilder({
+  id: "PositionSystem",
+  init: (world) => ({
+    id: "PositionSystem",
+    query: ["position"],
+    priority: 10,
+    onTick: (entities: Entity<Position>[]) => {
+      entities.forEach(entity => {
+        const { position } = entity.components
+        
+        // Handle rotation
+        if (position.data.rotating) {
+          position.data.rotation += position.data.rotating
+          // Clamp rotation...
+        }
+        
+        // Handle follows (entity following another)
+        if (position.data.follows) {
+          const target = world.entity(position.data.follows)
+          if (target?.components.position) {
+            position.data.x = target.components.position.data.x + position.data.offset.x
+            position.data.y = target.components.position.data.y + position.data.offset.y
+            // ...
+          }
+        }
+      })
+    }
+  })
+})
+```
+
+### Client-Only Systems
+
+Use `ClientSystemBuilder` for rendering, audio, UI:
+
+```typescript
+// From: core/src/ecs/System.ts:23
+export const ClientSystemBuilder = <T extends string = string>(builder: SystemBuilder<T>): SystemBuilder<T> => ({
+  ...builder,
+  init: (world: World) => {
+    return (world.mode === "client") ? builder.init(world) : undefined
+  }
+})
+
+// Usage:
+const PixiRenderSystem = ClientSystemBuilder({
+  id: "PixiRenderSystem",
+  init: (world) => ({
+    // Only runs on client
+  })
+})
+```
+
+### System Data (Networked)
+
+Systems can have networked state via `SystemEntity`:
+
+```typescript
+// From: core/src/ecs/System.ts:36
+export const SystemEntity = ({ systemId, data }: SystemEntityProps) => Entity({
+  id: `SystemEntity-${systemId}`,
+  persists: true,
+  components: {
+    networked: Networked(),
+    data: Data({ data }),
+  }
+})
+```
+
+When a system has `data`, it automatically creates a `SystemEntity-{id}` entity that syncs across the network.
+
+## Querying Entities
+
+Systems automatically receive entities matching their query:
+
+```typescript
+// Query entities with position AND renderable
+query: ["position", "renderable"]
+
+// onTick receives only matching entities:
+onTick: (entities: Entity<Position | Renderable>[]) => {
+  entities.forEach(entity => {
+    const { position, renderable } = entity.components
+    // Both components guaranteed to exist
+  })
+}
+```
+
+### Manual Queries
+
+Query from anywhere in code:
+
+```typescript
+// From: core/src/runtime/World.ts:269
+const players = world.queryEntities<PC | Team>(["pc", "team"], (entity) => {
+  return entity.components.team.data.team === 1  // Filter function
+})
+```
+
+## ECS Best Practices
+
+<AccordionGroup>
+  <Accordion title="Keep components pure data">
+    ❌ **Don't:** Put methods that modify other entities
+    
+    ✅ **Do:** Add helper methods that operate on component's own data
+    
+    ```typescript
+    // Good
+    position.setVelocity({ x: 10, y: 0 })
+    
+    // Bad (world access in component)
+    component.shootAtNearestEnemy(world)
+    ```
+  </Accordion>
+  
+  <Accordion title="Keep systems focused">
+    Each system should handle one concern (movement, rendering, damage, etc.)
+  </Accordion>
+  
+  <Accordion title="Use composition">
+    Create specialized entities by combining components:
+    
+    ```typescript
+    // Player = PC + Position + Health + Input + Renderable
+    // NPC = NPC + Position + Health + Renderable  
+    // Projectile = Position + Renderable + Expires
+    ```
+  </Accordion>
+  
+  <Accordion title="Mind the execution order">
+    Set priorities so systems run in logical order:
+    1. Input (priority 1)
+    2. AI/Actions (priority 5)
+    3. Physics (priority 7)
+    4. Rendering (priority 11)
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="World" icon="globe" href="/concepts/world">
+    Learn about the World runtime
+  </Card>
+  <Card title="Physics" icon="atom" href="/concepts/physics">
+    Add physics to entities
+  </Card>
+  <Card title="Rendering" icon="palette" href="/concepts/rendering">
+    Render entities with Pixi or Three.js
+  </Card>
+</CardGroup>

@@ -1,0 +1,509 @@
+---
+title: Physics
+description: Collision detection and physics simulation with Rapier
+---
+
+## Physics Engine
+
+Piggo uses **Rapier2D** for deterministic physics simulation:
+
+<CardGroup cols={2}>
+  <Card title="Rapier2D" icon="atom">
+    High-performance 2D physics engine
+    - Deterministic simulation
+    - Rigid body dynamics
+    - Collision detection
+    - Sensor triggers
+  </Card>
+  
+  <Card title="Custom Z-axis" icon="arrows-up-down">
+    2.5D physics (XY + Z)
+    - XY handled by Rapier
+    - Z (height) custom gravity
+    - Jump, fall, flying
+  </Card>
+</CardGroup>
+
+## Adding Physics
+
+### Collider Component
+
+Add collision to entities with the `Collider` component:
+
+```typescript
+import { Collider } from "@piggo-gg/core"
+
+const player = Entity({
+  id: "player",
+  components: {
+    position: Position({ x: 100, y: 100, z: 0 }),
+    collider: Collider({
+      shape: "ball",        // "ball", "cuboid", "line", "ellipse"
+      radius: 8,
+      restitution: 0.3,     // Bounciness (0-1)
+      mass: 1,
+      isStatic: false       // Dynamic vs static
+    }),
+    networked: Networked()
+  }
+})
+```
+
+### Collider Shapes
+
+<CodeGroup>
+```typescript Ball
+Collider({
+  shape: "ball",
+  radius: 8  // Radius in world units
+})
+```
+
+```typescript Cuboid (Rectangle)
+Collider({
+  shape: "cuboid",
+  length: 10,  // Half-width
+  width: 15    // Half-height
+})
+```
+
+```typescript Line (Polyline)
+Collider({
+  shape: "line",
+  points: [0, 0, 100, 0, 100, 100, 0, 100]  // x1,y1, x2,y2, ...
+})
+```
+
+```typescript Ellipse (Capsule)
+Collider({
+  shape: "ellipse",
+  radius: 5,   // End cap radius
+  length: 20   // Distance between caps
+})
+```
+</CodeGroup>
+
+### Collider Types
+
+```typescript
+// From: core/src/ecs/components/Collider.ts:54
+export type Collider = Component<"collider"> & {
+  body: RigidBody | undefined           // Rapier rigid body
+  bodyDesc: RigidBodyDesc
+  colliderDesc: ColliderDesc
+  cullable: boolean                     // Can be culled when far from dynamic bodies
+  group: keyof typeof ColliderGroups    // Collision group
+  hittable: boolean                     // Can be hit by attacks
+  isStatic: boolean                     // Static vs dynamic
+  priority: number                      // Collision priority
+  rapierCollider: RapierCollider
+  sensor: SensorCallback                // Trigger callback
+  // ...
+}
+```
+
+## Physics System
+
+The `PhysicsSystem` integrates Rapier with the ECS:
+
+```typescript
+// From: core/src/ecs/systems/gameplay/PhysicsSystem.ts:7
+export const PhysicsSystem = (mode: "global" | "local") => SystemBuilder({
+  id: mode === "global" ? "PhysicsSystem" : "LocalPhysicsSystem",
+  init: (world) => {
+    let bodies: Record<string, RigidBody> = {}
+    
+    // Initialize Rapier world
+    if (!world.physics && mode === "global") {
+      RapierInit().then(() => {
+        world.physics = new RapierWorld({ x: 0, y: 0 })
+        world.physics.timestep = 0.00625  // 25ms / 4 steps
+      })
+    }
+    
+    return {
+      id: mode === "global" ? "PhysicsSystem" : "LocalPhysicsSystem",
+      query: ["position", "collider"],
+      priority: mode === "global" ? 7 : 9,
+      
+      onTick: (entities: Entity<Collider | Position>[]) => {
+        if (!world.physics) return
+        
+        // Create Rapier bodies for new entities
+        for (const entity of entities) {
+          const { position, collider } = entity.components
+          
+          if (!bodies[entity.id]) {
+            const body = physics.createRigidBody(collider.bodyDesc)
+            collider.rapierCollider = physics.createCollider(collider.colliderDesc, body)
+            collider.body = body
+            bodies[entity.id] = body
+          }
+          
+          // Sync position to Rapier
+          bodies[entity.id].setTranslation({ x: position.data.x, y: position.data.y }, true)
+        }
+        
+        // Update velocities
+        for (const entity of entities) {
+          const { collider, position } = entity.components
+          if (!collider.isStatic && collider.body) {
+            collider.body.setLinvel(position.data.velocity, true)
+          }
+        }
+        
+        // Step physics (4 substeps per tick)
+        physics.step()
+        physics.step()
+        physics.step()
+        physics.step()
+        
+        // Read back from Rapier
+        for (const entity of entities) {
+          const { collider, position } = entity.components
+          if (collider.isStatic || !collider.body) continue
+          
+          const translation = collider.body.translation()
+          const linvel = collider.body.linvel()
+          
+          if (mode === "global") {
+            position.data.x = round(translation.x, 3)
+            position.data.y = round(translation.y, 3)
+            position.data.velocity.x = round(linvel.x, 3)
+            position.data.velocity.y = round(linvel.y, 3)
+            
+            // Handle Z-axis (custom gravity)
+            position.data.z = max(0, position.data.z + position.data.velocity.z)
+            
+            if (position.data.z + position.data.velocity.z <= 0) {
+              position.data.standing = true
+            } else {
+              position.data.standing = false
+              position.data.velocity.z -= position.data.gravity
+            }
+          }
+        }
+      }
+    }
+  }
+})
+```
+
+<Note>
+**Global vs Local PhysicsSystem:**
+- **Global** - Authoritative simulation (server and solo client)
+- **Local** - Client-side prediction for smooth rendering
+</Note>
+
+## Movement & Velocity
+
+### Setting Velocity
+
+```typescript
+position.setVelocity({ x: 10, y: 0 })  // Move right at 10 units/tick
+```
+
+### Impulse (Add to velocity)
+
+```typescript
+position.impulse({ x: 0, z: 5 })  // Jump (add upward velocity)
+```
+
+### Friction
+
+```typescript
+position: Position({
+  friction: true  // Auto-applies friction each tick
+})
+
+// From: core/src/ecs/systems/gameplay/PhysicsSystem.ts:226
+if (position.data.friction) {
+  const scale = position.data.flying ? 0.9 : (position.data.standing ? 0.4 : 0.92)
+  position.scaleVelocity(scale)
+}
+```
+
+### Heading (Move toward point)
+
+```typescript
+position.setHeading({ x: 200, y: 300 })  // Move toward (200, 300)
+position.setSpeed(5)  // At speed 5
+
+// From: core/src/ecs/components/Position.ts:236
+updateVelocity: () => {
+  const dx = position.data.heading.x - position.data.x
+  const dy = position.data.heading.y - position.data.y
+  
+  const angle = Math.atan2(dy, dx)
+  const Vx = Math.cos(angle) * position.data.speed
+  const Vy = Math.sin(angle) * position.data.speed
+  
+  position.setVelocity({ x: Vx, y: Vy })
+}
+```
+
+## Gravity & Jumping
+
+### Z-Axis Gravity
+
+```typescript
+position: Position({
+  gravity: 0.015  // Downward acceleration
+})
+
+// Each tick:
+position.data.velocity.z -= position.data.gravity
+position.data.z = max(0, position.data.z + position.data.velocity.z)
+```
+
+### Jumping
+
+```typescript
+if (position.data.standing) {
+  position.impulse({ z: 1.5 })  // Jump impulse
+  position.data.standing = false
+}
+```
+
+### Flying
+
+```typescript
+position: Position({
+  flying: true,  // Disables gravity
+  gravity: 0
+})
+```
+
+## Collision Groups
+
+Control which entities collide using collision groups:
+
+```typescript
+// From: core/src/ecs/components/Collider.ts:14
+export const ColliderGroups = {
+  all: "11111111111111111111111111111111",
+  default: "11111111000000001111111100000000",
+  none: "00000000000000000000000000000000",
+  "1": "01000000000000010100000000000001",  // Team 1
+  "2": "01000000000000100000000000000010",  // Team 2
+  // ...
+}
+
+// Usage:
+collider.setGroup("1")  // Only collides with group 1 entities
+```
+
+<Tip>
+Groups use bitmasks. An interaction is allowed if `(groupA & maskB) && (groupB & maskA)`.
+</Tip>
+
+## Sensors (Triggers)
+
+Sensors detect overlap without physical collision:
+
+```typescript
+const trigger = Entity({
+  id: "goal-zone",
+  components: {
+    position: Position({ x: 400, y: 200 }),
+    collider: Collider({
+      shape: "cuboid",
+      length: 50,
+      width: 50,
+      isStatic: true,
+      sensor: (otherEntity, world) => {
+        // Called when another entity overlaps
+        if (otherEntity.components.pc) {
+          console.log("Player entered goal zone!")
+          world.announce("GOAL!")
+          return true  // Stop checking other entities this tick
+        }
+        return false
+      }
+    })
+  }
+})
+```
+
+### Sensor Execution
+
+```typescript
+// From: core/src/ecs/systems/gameplay/PhysicsSystem.ts:184
+for (const [entity, collider] of colliders.entries()) {
+  if (collider.sensor && collider.rapierCollider) {
+    const collidedWith: Entity<Collider | Position>[] = []
+    
+    physics.intersectionPairsWith(collider.rapierCollider, (collider2) => {
+      const collided = [...colliders.entries()].find(([_, c]) => c.rapierCollider === collider2)
+      if (collided) collidedWith.push(collided[0])
+    })
+    
+    // Sort by distance, trigger closest first
+    collidedWith.sort((a, b) => {
+      const aDistance = XYdistance(a.components.position.data, entity.components.position.data)
+      const bDistance = XYdistance(b.components.position.data, entity.components.position.data)
+      return aDistance > bDistance ? 1 : -1
+    }).forEach((other) => {
+      collider.sensor(other, world)
+    })
+  }
+}
+```
+
+## Collision Detection
+
+### Detecting Collisions
+
+```typescript
+// From: core/src/ecs/systems/gameplay/PhysicsSystem.ts:142
+const diffX = position.data.velocity.x - round(linvel.x, 3)
+const diffY = position.data.velocity.y - round(linvel.y, 3)
+
+if (position.data.velocityResets && (abs(diffX) > 1 || abs(diffY) > 1)) {
+  if (sign(linvel.y) !== sign(position.data.velocity.y) && 
+      sign(linvel.x) !== sign(position.data.velocity.x)) {
+    position.lastCollided = world.tick  // Mark collision tick
+  }
+}
+```
+
+Check recent collision:
+
+```typescript
+if (world.tick - position.lastCollided <= 4) {
+  // Entity collided in last 4 ticks
+  console.log("Bounced!")
+}
+```
+
+## Static vs Dynamic
+
+<CodeGroup>
+```typescript Dynamic Body
+Collider({
+  isStatic: false,  // Affected by forces, gravity, collisions
+  mass: 1
+})
+
+// Rapier creates dynamic rigid body:
+bodyDesc = RigidBodyDesc.dynamic()
+```
+
+```typescript Static Body
+Collider({
+  isStatic: true  // Never moves, infinite mass
+})
+
+// Rapier creates fixed rigid body:
+bodyDesc = RigidBodyDesc.fixed()
+```
+</CodeGroup>
+
+<Warning>
+Static bodies are cheaper to simulate. Use them for walls, floors, obstacles that never move.
+</Warning>
+
+## Performance Optimization
+
+### Culling
+
+Static colliders far from dynamic bodies can be culled:
+
+```typescript
+Collider({
+  cullable: true,  // Skip if no dynamic bodies in same group
+  isStatic: true
+})
+
+// From: core/src/ecs/systems/gameplay/PhysicsSystem.ts:67
+entities = entities.filter((entity) => {
+  const { collider } = entity.components
+  return (collider.isStatic === false || !collider.cullable || groups.has(collider.group))
+})
+```
+
+### Substeps
+
+Rapier runs 4 substeps per tick for stability:
+
+```typescript
+physics.timestep = 0.00625  // 25ms / 4 = 6.25ms per substep
+
+physics.step()
+physics.step()
+physics.step()
+physics.step()
+```
+
+## Determinism
+
+Physics must be **deterministic** for rollback netcode:
+
+<AccordionGroup>
+  <Accordion title="Same inputs → Same outputs">
+    Rapier is deterministic when:
+    - Same initial conditions
+    - Same timestep
+    - Same operations in same order
+  </Accordion>
+  
+  <Accordion title="Sorted entity iteration">
+    ```typescript
+    // From: core/src/ecs/systems/gameplay/PhysicsSystem.ts:75
+    entities.sort((a, b) => a.id > b.id ? 1 : -1)  // Sort by ID
+    ```
+  </Accordion>
+  
+  <Accordion title="Reset on rollback">
+    ```typescript
+    // From: core/src/ecs/systems/gameplay/PhysicsSystem.ts:20
+    onRollback: () => {
+      world.physics?.free()
+      world.physics = new RapierWorld({ x: 0, y: 0 })
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Example: Ball Physics
+
+```typescript
+export const Ball = (): Entity<Position | Collider | Renderable> => Entity({
+  id: "ball",
+  components: {
+    position: Position({ 
+      x: 225, 
+      y: 0, 
+      z: 50,       // Start in air
+      gravity: 0.015,
+      velocityResets: 1  // Enable collision detection
+    }),
+    collider: Collider({
+      shape: "ball",
+      radius: 4,
+      restitution: 0.8,  // Bouncy
+      mass: 1,
+      group: "default"
+    }),
+    renderable: Renderable({ /* ... */ }),
+    networked: Networked()
+  }
+})
+
+// Hit the ball:
+ballPosition.impulse({ x: 5, y: 0, z: 2 })  // Forward and up
+```
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Rendering" icon="palette" href="/concepts/rendering">
+    Visualize physics bodies
+  </Card>
+  <Card title="Games" icon="gamepad" href="/concepts/games">
+    Build a physics game
+  </Card>
+  <Card title="Netcode" icon="network-wired" href="/concepts/netcode">
+    Sync physics over network
+  </Card>
+</CardGroup>

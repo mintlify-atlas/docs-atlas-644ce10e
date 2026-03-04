@@ -1,0 +1,402 @@
+---
+title: Creating Games
+description: Learn how to create a new multiplayer game in Piggo using the GameBuilder pattern
+---
+
+## Overview
+
+In Piggo, games are defined using the `GameBuilder` pattern. A GameBuilder is a configuration object that describes:
+- Which renderer to use (Three.js or PixiJS)
+- Netcode strategy (delay-based or rollback)
+- Initial game state and settings
+- Systems that run game logic
+- Entities that exist from the start
+
+<Steps>
+  <Step title="Create the game file">
+    Create a new file in `core/src/games/yourgame/YourGame.ts`:
+
+    ```typescript core/src/games/mygame/MyGame.ts
+    import { GameBuilder, SystemBuilder } from "@piggo-gg/core"
+
+    export type MyGameState = {
+      round: number
+      score: number
+    }
+
+    export type MyGameSettings = {
+      showControls: boolean
+      difficulty: "easy" | "hard"
+    }
+
+    export const MyGame: GameBuilder<MyGameState, MyGameSettings> = {
+      id: "mygame",
+      init: (world) => ({
+        id: "mygame",
+        netcode: "rollback",
+        renderer: "pixi",
+        settings: {
+          showControls: true,
+          difficulty: "easy"
+        },
+        state: {
+          round: 1,
+          score: 0
+        },
+        systems: [
+          // Add your systems here
+        ],
+        entities: [
+          // Add your entities here
+        ]
+      })
+    }
+    ```
+  </Step>
+
+  <Step title="Choose a renderer">
+    Piggo supports two renderers:
+
+    <Tabs>
+      <Tab title="Three.js (3D)">
+        Use `renderer: "three"` for 3D games with voxel terrain.
+
+        ```typescript
+        import {
+          BlockMeshSystem, BlockPhysicsSystem, ThreeCameraSystem,
+          ThreeSystem, Sky, Sun, Water
+        } from "@piggo-gg/core"
+
+        export const Build: GameBuilder<BuildState, BuildSettings> = {
+          id: "build",
+          init: (world) => ({
+            id: "build",
+            renderer: "three",
+            netcode: "rollback",
+            systems: [
+              BlockPhysicsSystem("global"),
+              BlockPhysicsSystem("local"),
+              ThreeCameraSystem({ height: 0.5, distance: 1 }),
+              ThreeSystem,
+              BlockMeshSystem({ counts: { grass: 2000, marble: 10000 } })
+            ],
+            entities: [
+              Sky(),
+              Water(),
+              Sun()
+            ],
+            // ... rest of config
+          })
+        }
+        ```
+      </Tab>
+
+      <Tab title="PixiJS (2D)">
+        Use `renderer: "pixi"` for 2D games with sprite-based graphics.
+
+        ```typescript
+        import {
+          PixiRenderSystem, PixiCameraSystem, PhysicsSystem,
+          Background, Water2D
+        } from "@piggo-gg/core"
+
+        export const Island: GameBuilder<IslandState, IslandSettings> = {
+          id: "island",
+          init: (world) => ({
+            id: "island",
+            renderer: "pixi",
+            netcode: "rollback",
+            systems: [
+              PhysicsSystem("local"),
+              PhysicsSystem("global"),
+              PixiRenderSystem,
+              PixiCameraSystem({
+                follow: () => ({ x: 0, y: -10, z: 0 }),
+                resize: () => 3.4
+              })
+            ],
+            entities: [
+              Background({ rays: true }),
+              Water2D()
+            ],
+            // ... rest of config
+          })
+        }
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Configure netcode">
+    Choose a networking strategy:
+
+    <CodeGroup>
+      ```typescript Rollback (Recommended)
+      export const MyGame: GameBuilder = {
+        id: "mygame",
+        init: (world) => ({
+          // Rollback netcode for competitive games
+          // Provides instant input response with prediction
+          netcode: "rollback",
+          // ...
+        })
+      }
+      ```
+
+      ```typescript Delay-based
+      export const MyGame: GameBuilder = {
+        id: "mygame",
+        init: (world) => ({
+          // Delay-based netcode for cooperative games
+          // Simpler but has input lag
+          netcode: "delay",
+          // ...
+        })
+      }
+      ```
+    </CodeGroup>
+
+    **Rollback** is recommended for most games as it provides responsive controls while maintaining synchronization across clients.
+  </Step>
+
+  <Step title="Add core systems">
+    Systems define your game logic. Add essential systems based on your needs:
+
+    ```typescript
+    import {
+      SpawnSystem, PhysicsSystem, HUDSystem, InventorySystem,
+      PixiCameraSystem, ShadowSystem
+    } from "@piggo-gg/core"
+
+    systems: [
+      // Spawn players when they join
+      SpawnSystem({ spawner: MyCharacter, pos: { x: 0, y: 0, z: 0 } }),
+
+      // Handle physics collisions
+      PhysicsSystem("local"),
+      PhysicsSystem("global"),
+
+      // Camera controls
+      PixiCameraSystem({
+        follow: () => ({ x: 0, y: 0, z: 0 }),
+        resize: () => 3.4
+      }),
+
+      // Player inventory
+      InventorySystem,
+
+      // Drop shadows for sprites
+      ShadowSystem,
+
+      // Show keyboard controls
+      HUDSystem(controlsConfig)
+    ]
+    ```
+  </Step>
+
+  <Step title="Create a custom system">
+    Build game-specific logic with custom systems:
+
+    ```typescript
+    const MyGameSystem = SystemBuilder({
+      id: "MyGameSystem",
+      init: (world) => {
+        // Initialize system state
+        let timer = 0
+
+        return {
+          id: "MyGameSystem",
+          query: [], // Components to query
+          priority: 6, // Lower runs first
+          onTick: () => {
+            const state = world.state<MyGameState>()
+
+            timer++
+            if (timer > 60) {
+              state.round++
+              timer = 0
+            }
+
+            // Game logic here
+            const players = world.players()
+            for (const player of players) {
+              const character = player.components.controlling.getCharacter(world)
+              if (character) {
+                // Update character state
+              }
+            }
+          }
+        }
+      }
+    })
+    ```
+  </Step>
+
+  <Step title="Add UI entities">
+    Include essential UI elements:
+
+    ```typescript
+    import {
+      EscapeMenu, HtmlChat, HtmlFpsText, Cursor
+    } from "@piggo-gg/core"
+
+    entities: [
+      Cursor(),
+      EscapeMenu(world),
+      HtmlChat(),
+      HtmlFpsText()
+    ]
+    ```
+  </Step>
+</Steps>
+
+## Complete Example: Strike Game
+
+Here's the complete Strike game from the Piggo codebase:
+
+```typescript core/src/games/strike/Strike.ts
+import {
+  BlockMeshSystem, BlockPhysicsSystem, Crosshair, ThreeNametagSystem,
+  EscapeMenu, GameBuilder, Hitmarker, HtmlChat, HUDSystem, Sky,
+  SpawnSystem, Sun, SystemBuilder, ThreeCameraSystem, ThreeSystem
+} from "@piggo-gg/core"
+import { Sarge } from "./Sarge"
+import { RetakeMap, RetakeMapColoring } from "./RetakeMap"
+
+export type StrikeState = {
+  jumped: string[]
+  phase: "warmup" | "round-start" | "round-play" | "round-end"
+  phaseChange: number | null
+  round: number | null
+}
+
+export type StrikeSettings = {
+  showControls: boolean
+  showCrosshair: boolean
+  showNametags: boolean
+  mouseSensitivity: number
+}
+
+export const Strike: GameBuilder<StrikeState, StrikeSettings> = {
+  id: "strike",
+  init: (world) => ({
+    id: "strike",
+    netcode: "rollback",
+    renderer: "three",
+    settings: {
+      showControls: true,
+      showCrosshair: true,
+      showNametags: true,
+      mouseSensitivity: 1
+    },
+    state: {
+      jumped: [],
+      phase: "warmup",
+      phaseChange: null,
+      round: null
+    },
+    systems: [
+      SpawnSystem({ spawner: Sarge, pos: { x: 8, y: 8, z: 2 } }),
+      BlockPhysicsSystem("global"),
+      BlockPhysicsSystem("local"),
+      ThreeCameraSystem({ height: 0.5, distance: 0.8 }),
+      StrikeSystem,
+      ThreeNametagSystem,
+      ThreeSystem,
+      BlockMeshSystem({ counts: { marble: 10000 } })
+    ],
+    entities: [
+      Crosshair(),
+      Hitmarker(),
+      EscapeMenu(world),
+      HtmlChat(),
+      Sun(),
+      Sky()
+    ]
+  })
+}
+
+const StrikeSystem = SystemBuilder({
+  id: "StrikeSystem",
+  init: (world) => {
+    world.blocks.loadMap(RetakeMap)
+    world.blocks.coloring = RetakeMapColoring
+
+    return {
+      id: "StrikeSystem",
+      query: [],
+      priority: 3,
+      onTick: () => {
+        const state = world.state<StrikeState>()
+        const players = world.players()
+
+        // Handle phase changes
+        if (state.phaseChange && world.tick >= state.phaseChange) {
+          if (state.phase === "warmup") {
+            state.phase = "round-start"
+            // Spawn players at team positions
+          }
+          state.phaseChange = null
+        }
+
+        // Update player states
+        for (const player of players) {
+          const character = player.components.controlling?.getCharacter(world)
+          if (character) {
+            // Game logic here
+          }
+        }
+      }
+    }
+  }
+})
+```
+
+## Game State Management
+
+Access and modify game state from any system:
+
+```typescript
+const state = world.state<MyGameState>()
+state.round++
+state.score += 100
+
+const settings = world.settings<MyGameSettings>()
+if (settings.difficulty === "hard") {
+  // Make enemies stronger
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Keep state minimal" icon="database">
+    Only store data that needs to be synchronized across clients in game state.
+  </Card>
+  <Card title="Use system priority" icon="list-ol">
+    Lower priority numbers run first. Physics typically runs at priority 7-9.
+  </Card>
+  <Card title="Separate concerns" icon="layer-group">
+    Create focused systems for different aspects (physics, AI, UI, scoring).
+  </Card>
+  <Card title="Test locally first" icon="flask">
+    Use DummyPlayer entities to test multiplayer logic locally.
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Components" href="/building/components" icon="cube">
+    Learn how to create and use components
+  </Card>
+  <Card title="Systems" href="/building/systems" icon="gears">
+    Build custom systems for game logic
+  </Card>
+  <Card title="Entities" href="/building/entities" icon="shapes">
+    Create characters, objects, and UI elements
+  </Card>
+  <Card title="Actions" href="/building/actions" icon="bolt">
+    Handle player input and events
+  </Card>
+</CardGroup>

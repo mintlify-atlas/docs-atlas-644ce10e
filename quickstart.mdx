@@ -1,80 +1,279 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Build your first Piggo game in minutes
 ---
 
-## Get started in three steps
+## Get Started
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide will help you create your first multiplayer game with Piggo. We'll build a simple game that demonstrates the core concepts of the framework.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  This quickstart assumes you've already completed the [installation](/installation) steps.
 </Note>
+
+## Create Your First Game
+
+<Steps>
+  <Step title="Define Your Game Builder">
+    Every Piggo game starts with a `GameBuilder` that defines the game's configuration:
+
+    ```typescript
+    import { GameBuilder, Background, Cursor } from "@piggo-gg/core"
+
+    type MyGameState = {
+      score: number
+    }
+
+    type MyGameSettings = {
+      maxPlayers: number
+    }
+
+    export const MyGame: GameBuilder<MyGameState, MyGameSettings> = {
+      id: "mygame",
+      init: (world) => ({
+        id: "mygame",
+        renderer: "pixi",  // or "three" for 3D
+        netcode: "delay",  // or "rollback"
+        settings: {
+          maxPlayers: 4
+        },
+        state: {
+          score: 0
+        },
+        systems: [
+          // Systems will be added here
+        ],
+        entities: [
+          Background({ rays: true }),
+          Cursor()
+        ]
+      })
+    }
+    ```
+
+    The `GameBuilder` returns a `Game` object with:
+    - **renderer**: Choose "pixi" for 2D or "three" for 3D
+    - **netcode**: "delay" or "rollback" for multiplayer sync
+    - **settings**: Immutable game configuration
+    - **state**: Networked game state that syncs across clients
+    - **systems**: Behavior and logic processors
+    - **entities**: Starting game objects
+  </Step>
+
+  <Step title="Add Systems for Game Logic">
+    Systems contain the logic that runs every tick. Here's an example from the Hoops game:
+
+    ```typescript
+    import {
+      SystemBuilder, PhysicsSystem, SpawnSystem,
+      PixiRenderSystem, PixiCameraSystem
+    } from "@piggo-gg/core"
+
+    export const MyGame: GameBuilder<MyGameState, MyGameSettings> = {
+      id: "mygame",
+      init: (world) => ({
+        id: "mygame",
+        renderer: "pixi",
+        netcode: "delay",
+        settings: { maxPlayers: 4 },
+        state: { score: 0 },
+        systems: [
+          PhysicsSystem("local"),
+          SpawnSystem({ spawner: MyCharacter, pos: { x: 0, y: 0, z: 0 } }),
+          PixiRenderSystem,
+          PixiCameraSystem({
+            follow: () => ({ x: 0, y: 0, z: 0 }),
+            resize: () => 1.0
+          })
+        ],
+        entities: [
+          Background({ rays: true }),
+          Cursor()
+        ]
+      })
+    }
+    ```
+
+    Common built-in systems:
+    - `PhysicsSystem` - Rapier physics integration
+    - `SpawnSystem` - Player spawn management
+    - `PixiRenderSystem` / `ThreeRenderSystem` - Rendering
+    - `PixiCameraSystem` / `ThreeCameraSystem` - Camera control
+    - `HUDSystem` - UI overlays
+  </Step>
+
+  <Step title="Create the World">
+    The `World` is the runtime that manages your game. Use `DefaultWorld` to get started:
+
+    ```typescript
+    import {
+      DefaultWorld, PixiRenderer, ThreeRenderer
+    } from "@piggo-gg/core"
+
+    const world = DefaultWorld({
+      pixi: PixiRenderer(),
+      three: ThreeRenderer()
+    })
+    ```
+
+    The `DefaultWorld` includes essential systems:
+    - `RandomSystem` - Deterministic random numbers
+    - `ExpiresSystem` - Auto-remove timed entities
+    - `ControlSystem` - Input handling
+    - `InputSystem` - Keyboard/mouse/touch
+    - `CommandSystem` - Chat commands
+    - `NPCSystem` - Non-player character logic
+    - `ActionSystem` - Player actions
+    - `PositionSystem` - Transform updates
+  </Step>
+
+  <Step title="Initialize Your Game">
+    Put it all together in your entry point:
+
+    ```typescript
+    import { PiggoGG } from "./PiggoGG"
+    import { MyGame } from "./MyGame"
+
+    PiggoGG({ gameBuilder: MyGame })
+    ```
+
+    This initializes the canvas, sets up audio, and starts the game loop.
+  </Step>
+
+  <Step title="Run the Development Server">
+    Start the local dev server:
+
+    ```bash
+    bun dev
+    ```
+
+    This launches:
+    - Web client at `http://localhost:3000`
+    - Game server with WebSocket support
+    - Hot reload for instant updates
+
+    Open your browser and start playing!
+  </Step>
+</Steps>
+
+## Full Example: Simple 2D Game
+
+Here's a complete example based on the Lobby game structure:
+
+```typescript core/src/games/mygame/MyGame.ts
+import {
+  Background, Cursor, Entity, GameBuilder, HtmlChat,
+  HtmlFpsText, HtmlLagText, Networked, NPC,
+  PixiRenderSystem, World
+} from "@piggo-gg/core"
+
+type MyGameState = {
+  playing: boolean
+}
+
+export const MyGame: GameBuilder<MyGameState> = {
+  id: "mygame",
+  init: () => ({
+    id: "mygame",
+    renderer: "pixi",
+    netcode: "delay",
+    settings: {},
+    state: {
+      playing: false
+    },
+    systems: [PixiRenderSystem],
+    entities: [
+      Background({ move: 0.5, rays: true }),
+      GameController(),
+      HtmlChat(),
+      HtmlLagText(),
+      HtmlFpsText(),
+      Cursor()
+    ]
+  })
+}
+
+const GameController = (): Entity => {
+  return Entity({
+    id: "gameController",
+    components: {
+      networked: Networked(),
+      npc: NPC({
+        behavior: (entity, world) => {
+          const state = world.state<MyGameState>()
+          
+          // Game logic runs here every tick
+          if (world.tick % 60 === 0) {
+            world.announce(`Tick: ${world.tick}`)
+          }
+        }
+      })
+    }
+  })
+}
+```
+
+## Project Structure
+
+Your game files should follow this structure:
+
+```
+core/src/games/mygame/
+├── MyGame.ts          # Main game builder
+├── MyGameEntities.ts  # Entity factories
+├── MyGameSystems.ts   # Custom systems
+└── MyGameConstants.ts # Game constants
+```
+
+## Understanding the Game Loop
+
+Piggo runs on a fixed tick rate (default: 20 ticks/second):
+
+1. **onTick**: Systems process game logic
+2. **onRender**: Visual updates (can run at 60 FPS)
+3. **Network sync**: State synchronizes across clients
+
+```typescript
+// Systems run every tick
+world.onTick({ isRollback: false })
+
+// Rendering runs every frame
+world.onRender()
+```
+
+<Note>
+  The tick rate determines game simulation frequency, while rendering can run at higher frame rates for smooth visuals.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="ECS Concepts"
+    icon="cubes"
+    href="/concepts/ecs"
+  >
+    Deep dive into Entity Component System architecture
+  </Card>
+  <Card
+    title="Creating Entities"
+    icon="cube"
+    href="/building/entities"
+  >
+    Learn how to build game objects
+  </Card>
+  <Card
+    title="Building Systems"
+    icon="gears"
+    href="/building/systems"
+  >
+    Write custom game logic
+  </Card>
+  <Card
+    title="Multiplayer Netcode"
+    icon="network-wired"
+    href="/concepts/netcode"
+  >
+    Implement rollback and delay netcode
+  </Card>
+</CardGroup>

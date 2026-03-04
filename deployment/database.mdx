@@ -1,0 +1,430 @@
+---
+title: 'Database'
+description: 'Set up PostgreSQL with Prisma for user data and game state'
+---
+
+Piggo Games uses Prisma with PostgreSQL to manage user profiles, friend relationships, high scores, and cosmetic purchases.
+
+## Database Schema
+
+The schema is defined in `server/src/db/schema.prisma` with the following models:
+
+### Users
+
+```prisma
+model users {
+  name                   String       @id @unique @db.Citext
+  googleId               String       @unique
+  sentFriendRequests     friends[]    @relation("Friendship1")
+  receivedFriendRequests friends[]    @relation("Friendship2")
+  highscores             highscores[]
+  purchases              purchases[]
+}
+```
+
+- **Primary Key**: `name` (case-insensitive via `@db.Citext`)
+- **Google OAuth**: `googleId` for authentication
+- **Relations**: Friend requests, high scores, and skin purchases
+
+### Friends
+
+```prisma
+model friends {
+  id        String           @id @default(uuid())
+  user1     users            @relation("Friendship1", fields: [user1Id], references: [name], onDelete: Cascade)
+  user1Id   String           @db.Citext
+  user2     users            @relation("Friendship2", fields: [user2Id], references: [name], onDelete: Cascade)
+  user2Id   String           @db.Citext
+  status    FriendshipStatus @default(PENDING)
+  createdAt DateTime         @default(now())
+
+  @@unique([user1Id, user2Id])
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  BLOCKED
+}
+```
+
+- **Bidirectional**: `user1` sends request to `user2`
+- **Status**: `PENDING`, `ACCEPTED`, or `BLOCKED`
+- **Cascade Delete**: Removing a user deletes all friend relationships
+
+### High Scores
+
+```prisma
+model highscores {
+  id        String   @id @default(uuid())
+  user      users    @relation(fields: [userId], references: [name])
+  userId    String   @db.Citext
+  score     Int
+  createdAt DateTime @default(now())
+
+  @@unique([userId, createdAt])
+  @@index([score])
+}
+```
+
+- **Indexed**: Fast lookups by score for leaderboards
+- **Unique Constraint**: One score per user per timestamp
+
+### Skins & Purchases
+
+```prisma
+model skins {
+  id        String      @id @default(uuid())
+  name      String      @db.Citext
+  createdAt DateTime    @default(now())
+  limited   Boolean     @default(false)
+  maxSupply Int         @default(0)
+  price     Int         @default(0)
+  purchases purchases[]
+
+  @@unique([name])
+  @@index([createdAt])
+}
+
+model purchases {
+  id          String   @id @default(uuid())
+  user        users    @relation(fields: [userId], references: [name])
+  userId      String   @db.Citext
+  skin        skins    @relation(fields: [skinId], references: [id])
+  skinId      String
+  purchasedAt DateTime @default(now())
+
+  @@unique([userId, skinId])
+  @@index([purchasedAt])
+}
+```
+
+- **Limited Edition**: Skins can have `maxSupply` for exclusivity
+- **Purchase Tracking**: Prevents duplicate purchases per user
+
+## Prisma Configuration
+
+### Client Generation
+
+The Prisma client is generated to a custom output directory (server/src/db/schema.prisma:6-10):
+
+```prisma
+generator client {
+  provider        = "prisma-client-js"
+  output          = "generated"
+  previewFeatures = ["views", "relationJoins"]
+}
+```
+
+- **Output**: `server/src/db/generated/`
+- **Preview Features**: Enables database views and optimized relation joins
+
+### Database Connection
+
+The datasource uses an environment variable for the connection string (server/src/db/schema.prisma:1-4):
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+```
+
+## Local Development Setup
+
+<Steps>
+  <Step title="Install PostgreSQL">
+    Install PostgreSQL 14+ on your machine:
+
+    <CodeGroup>
+    ```bash macOS
+    brew install postgresql@14
+    brew services start postgresql@14
+    ```
+
+    ```bash Ubuntu
+    sudo apt update
+    sudo apt install postgresql postgresql-contrib
+    sudo systemctl start postgresql
+    ```
+
+    ```bash Docker
+    docker run --name piggo-postgres \
+      -e POSTGRES_PASSWORD=postgres \
+      -e POSTGRES_DB=piggo \
+      -p 5432:5432 \
+      -d postgres:14
+    ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Create database">
+    Create the `piggo` database:
+
+    ```bash
+    psql -U postgres -c "CREATE DATABASE piggo;"
+    ```
+
+    Or if using Docker:
+
+    ```bash
+    docker exec -it piggo-postgres psql -U postgres -c "CREATE DATABASE piggo;"
+    ```
+  </Step>
+
+  <Step title="Set DATABASE_URL">
+    Export the connection string:
+
+    ```bash
+    export DATABASE_URL="postgresql://postgres@localhost:5432/piggo"
+    ```
+
+    <Note>
+      This is set automatically in the `dev` script (server/package.json:6).
+    </Note>
+  </Step>
+
+  <Step title="Run migrations">
+    Apply all migrations to create tables:
+
+    ```bash
+    bun db
+    ```
+
+    This runs `bun x prisma migrate dev --schema=src/db/schema.prisma` which:
+    - Creates migration files if schema changed
+    - Applies pending migrations
+    - Regenerates Prisma client
+  </Step>
+</Steps>
+
+## Prisma Commands
+
+All Prisma commands are available as npm scripts in `server/package.json`:
+
+<CodeGroup>
+```bash Generate Client
+# Generate Prisma client from schema
+bun gen
+
+# Runs: bun x prisma generate --schema=src/db/schema.prisma --no-hints
+```
+
+```bash Development Migrations
+# Create and apply migrations (local)
+bun db
+
+# Runs: DATABASE_URL='postgresql://postgres@localhost:5432/piggo' \
+#       bun x prisma migrate dev --schema=src/db/schema.prisma
+```
+
+```bash Production Migrations
+# Apply migrations (production)
+bun --cwd server prisma:deploy
+
+# Runs: bun x prisma migrate deploy --schema=src/db/schema.prisma
+```
+
+```bash Prisma Studio
+# Open database GUI
+bun x prisma studio --schema=server/src/db/schema.prisma
+```
+</CodeGroup>
+
+## Migration History
+
+Migrations are stored in `server/src/db/migrations/` with the following history:
+
+<Steps>
+  <Step title="20250202223747_init">
+    Initial database schema with users and friends tables
+  </Step>
+
+  <Step title="20250324154011_google_sign_in">
+    Added `googleId` field for OAuth authentication
+  </Step>
+
+  <Step title="20250324173146_case_insensitive_username">
+    Changed username column to `@db.Citext` for case-insensitive matching
+  </Step>
+
+  <Step title="20250331202543_users_id_field_name">
+    Changed primary key from `id` to `name`
+  </Step>
+
+  <Step title="20250730193359_highscores">
+    Added highscores table for leaderboards
+  </Step>
+
+  <Step title="20250807190354_skins_and_purchases">
+    Added skins and purchases tables for cosmetics
+  </Step>
+
+  <Step title="20250811235448_on_delete_cascade">
+    Added cascade deletes for friend relationships
+  </Step>
+</Steps>
+
+## Using Prisma Client
+
+The server initializes Prisma client in `server/src/Api.ts:40-42`:
+
+```typescript
+const prisma = new PrismaClient({
+  // datasourceUrl: process.env["DATABASE_URL"] ?? "postgresql://postgres@localhost:5432/piggo"
+})
+```
+
+### Query Examples
+
+<CodeGroup>
+```typescript Find User
+const user = await prisma.users.findUnique({ 
+  where: { googleId: "123456789" } 
+})
+
+if (user) {
+  console.log(`Found user: ${user.name}`)
+}
+```
+
+```typescript Create Friend Request
+await prisma.friends.create({
+  data: {
+    user1: { connect: { googleId: token.googleId } },
+    user2: { connect: { name: friendName } },
+    status: "PENDING"
+  }
+})
+```
+
+```typescript List Friends
+const friends = await prisma.friends.findMany({
+  where: { 
+    user1: { googleId: userId },
+    NOT: { status: "BLOCKED" } 
+  },
+  include: { user2: true }
+})
+```
+
+```typescript Create User
+const newUser = await prisma.users.create({
+  data: { 
+    name: username, 
+    googleId: googleId 
+  }
+})
+```
+</CodeGroup>
+
+## Production Database
+
+<Warning>
+  Always run migrations in a transaction and maintain backups before deploying schema changes.
+</Warning>
+
+### Deployment Checklist
+
+<Steps>
+  <Step title="Backup database">
+    Create a backup before running migrations:
+
+    ```bash
+    pg_dump -h your-host -U your-user -d piggo > backup.sql
+    ```
+  </Step>
+
+  <Step title="Set DATABASE_URL">
+    Set the production connection string with SSL:
+
+    ```bash
+    DATABASE_URL="postgresql://user:pass@host:5432/piggo?sslmode=require"
+    ```
+  </Step>
+
+  <Step title="Run deploy command">
+    Apply migrations in production:
+
+    ```bash
+    bun x prisma migrate deploy --schema=server/src/db/schema.prisma
+    ```
+
+    This command:
+    - Only applies pending migrations
+    - Does not create new migrations
+    - Safe for CI/CD pipelines
+  </Step>
+
+  <Step title="Verify connection">
+    Test the connection by starting the server:
+
+    ```bash
+    bun --cwd server start
+    ```
+  </Step>
+</Steps>
+
+### Connection Pooling
+
+For production workloads, consider using connection pooling:
+
+```bash
+DATABASE_URL="postgresql://user:pass@host:5432/piggo?pgbouncer=true&connection_limit=10"
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Migration failed: relation already exists">
+    The migration was partially applied. Options:
+
+    1. **Resolve forward**: Mark migration as applied
+       ```bash
+       bun x prisma migrate resolve --applied <migration-name> --schema=server/src/db/schema.prisma
+       ```
+
+    2. **Rollback**: Restore from backup and retry
+  </Accordion>
+
+  <Accordion title="Prisma client out of sync">
+    Regenerate the client:
+
+    ```bash
+    bun gen
+    ```
+
+    Then restart your server.
+  </Accordion>
+
+  <Accordion title="Connection refused">
+    Check that PostgreSQL is running:
+
+    ```bash
+    # macOS/Linux
+    pg_isready -h localhost -p 5432
+
+    # Docker
+    docker ps | grep postgres
+    ```
+  </Accordion>
+
+  <Accordion title="SSL connection required">
+    Add `?sslmode=require` to your `DATABASE_URL`:
+
+    ```bash
+    DATABASE_URL="postgresql://user:pass@host:5432/piggo?sslmode=require"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Server Setup" icon="server" href="/deployment/server-setup">
+    Configure the API server and WebSocket handlers
+  </Card>
+  <Card title="Production Deploy" icon="rocket" href="/deployment/production">
+    Deploy your server with Docker
+  </Card>
+</CardGroup>

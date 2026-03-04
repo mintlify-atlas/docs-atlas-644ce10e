@@ -1,0 +1,720 @@
+---
+title: 'Build'
+description: 'Creative voxel sandbox for building with blocks, flying, and NPCs'
+---
+
+Build is a creative sandbox game where players can freely build structures using voxel blocks, fly around, and interact with NPCs like pigs and sharks.
+
+## Gameplay
+
+- **Mode**: Creative building sandbox
+- **Blocks**: Marble voxels with color customization
+- **Flight**: Toggle flying with F key
+- **Water**: Swimming mechanics
+- **NPCs**: Pigs on land, sharks in water
+- **Tools**: Blaster and dagger weapons
+- **Multiplayer**: Collaborative building
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/build/Build.ts:24`
+
+```typescript
+export const Build: GameBuilder<BuildState, BuildSettings> = {
+  id: "build",
+  init: (world) => ({
+    id: "build",
+    netcode: "rollback",
+    renderer: "three",
+    settings: {
+      showCrosshair: true,
+      showControls: true,
+      showNametags: true,
+      blockColor: "white"
+    },
+    state: {
+      doubleJumped: []
+    },
+    systems: [
+      SpawnSystem({ spawner: Bob, pos: { x: -6, y: 6.6, z: 2 } }),
+      BlockPhysicsSystem("global"),
+      BlockPhysicsSystem("local"),
+      ThreeCameraSystem({ height: 0.5, distance: 1 }),
+      HUDSystem(controls),
+      BuildSystem,
+      ThreeNametagSystem,
+      ThreeSystem,
+      InventorySystem,
+      BlockMeshSystem({ 
+        counts: { 
+          grass: 2000, 
+          leaf: 0, 
+          oak: 0, 
+          spruce: 0, 
+          marble: 10000 
+        } 
+      }),
+      ParticleSystem
+    ],
+    entities: [
+      Crosshair(),
+      Hitmarker(),
+      EscapeMenu(world),
+      HtmlChat(),
+      Sky(),
+      Water(),
+      Sun(),
+      HtmlLagText(),
+      HtmlFpsText(),
+      Pig(),
+      Shork()
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type BuildState = {
+  doubleJumped: string[]  // Characters who used double jump
+}
+```
+
+### Settings
+
+```typescript
+export type BuildSettings = {
+  showCrosshair: boolean
+  showControls: boolean
+  showNametags: boolean
+  blockColor: BlockColor  // Color for placed blocks
+}
+```
+
+## Systems
+
+### BuildSystem
+
+Location: `core/src/games/build/Build.ts:70`
+
+```typescript
+const BuildSystem = SystemBuilder({
+  id: "BuildSystem",
+  init: (world) => {
+    // Load pre-built map
+    world.blocks.loadMap(BuildMap)
+    world.blocks.coloring = BuildMapColoring
+
+    const mobileUI = MobileUI(world)
+
+    // Set initial camera rotation
+    if (world.client) {
+      world.client.controls.localAim.x = PI / 2 * 2.5
+    }
+
+    return {
+      id: "BuildSystem",
+      query: [],
+      priority: 3,
+      onTick: () => {
+        const state = world.game.state as BuildState
+
+        // Menu control
+        if (world.client && !world.client.mobile) {
+          world.client.menu = document.pointerLockElement === null
+        }
+
+        mobileUI?.update()
+
+        const players = world.players()
+
+        for (const player of players) {
+          const character = player.components.controlling.getCharacter(world)
+          if (!character) continue
+
+          const { position } = character.components
+          const { standing, z, flying } = position.data
+
+          // Handle swimming
+          if (flying) {
+            position.data.swimming = false
+          } else if (z < -0.2) {
+            position.data.swimming = true
+            // Can't double-jump while swimming
+            if (!state.doubleJumped.includes(character.id)) {
+              state.doubleJumped.push(character.id)
+            }
+          } else if (z >= 0) {
+            position.data.swimming = false
+          }
+
+          // Reset double jump on landing
+          if (standing) {
+            state.doubleJumped = state.doubleJumped.filter(id => id !== character.id)
+          }
+        }
+      }
+    }
+  }
+})
+```
+
+### BlockMeshSystem
+
+Location: `core/src/games/build/Build.ts:49`
+
+Renders voxel chunks with high marble count:
+
+```typescript
+BlockMeshSystem({ 
+  counts: { 
+    grass: 2000,    // Some grass
+    leaf: 0,        // No leaves
+    oak: 0,         // No oak
+    spruce: 0,      // No spruce
+    marble: 10000   // Primary block type
+  } 
+})
+```
+
+## Entities
+
+### Bob (Player Character)
+
+Location: `core/src/games/build/Bob.ts:19`
+
+Full-featured building character:
+
+```typescript
+export const Bob = (player: Player): Character => {
+  let mesh: Object3D = new Object3D()
+  let block: Mesh | undefined = undefined  // Block preview
+  let pigMixer: AnimationMixer | undefined
+
+  const bob = Character({
+    id: `bob-${player.id}`,
+    components: {
+      position: Position({
+        x: -6, y: 6.6, z: 2,
+        friction: true,
+        gravity: 0.003,
+        aim: { x: 0, y: 0 }
+      }),
+      networked: Networked(),
+      inventory: Inventory([BlasterItem, DaggerItem]),
+      collider: Collider({ shape: "ball", radius: 0.1 }),
+      health: Health(),
+      input: Input({
+        joystick: ({ client }) => {
+          // Mobile joystick with camera-relative movement
+        },
+        press: {
+          "1": () => ({ actionId: "setActiveItemIndex", params: { index: 0 } }),
+          "2": () => ({ actionId: "setActiveItemIndex", params: { index: 1 } }),
+          "mb2": ({ hold, world, character }) => {
+            // Place blocks
+            const dir = world.three!.camera.dir(world)
+            const camera = world.three!.camera.pos()
+            const pos = character.components.position.xyz()
+            const { blockColor } = world.settings<BuildSettings>()
+            return { 
+              actionId: "place", 
+              params: { dir, camera, pos, type: 12, blockColor } 
+            }
+          },
+          "scrolldown": ({ client, world }) => {
+            // Cycle block color down
+            const { blockColor } = world.settings<BuildSettings>()
+            world.game.settings.blockColor = nextColor(blockColor)
+          },
+          "scrollup": ({ client, world }) => {
+            // Cycle block color up
+            const { blockColor } = world.settings<BuildSettings>()
+            world.game.settings.blockColor = nextColor(blockColor, true)
+          },
+          "f": () => {
+            // Toggle flying
+            bob.components.position.data.flying = !bob.components.position.data.flying
+          },
+          "shift": () => {
+            // Fly/swim down
+            return { actionId: "down" }
+          },
+          " ": ({ hold }) => {
+            // Jump or fly up
+            const { flying, swimming } = bob.components.position.data
+            if (flying || swimming) {
+              return { actionId: "up" }
+            } else {
+              return { actionId: "jump", params: { hold } }
+            }
+          },
+          "q": ({ world }) => {
+            // Toggle first/third person
+            const { camera } = world.three!
+            camera.mode = camera.mode === "first" ? "third" : "first"
+          },
+          "n": ({ world }) => {
+            // Toggle nametags
+            const settings = world.settings<BuildSettings>()
+            settings.showNametags = !settings.showNametags
+          },
+          "x": ({ character, world }) => {
+            // Volume placement mode
+            // Place multiple blocks at once
+          },
+          // WASD movement
+          "w,a": ({ world }) => ({ actionId: "move", params: { key: "wa", ...upAndDir(world) } }),
+          "w,d": ({ world }) => ({ actionId: "move", params: { key: "wd", ...upAndDir(world) } }),
+          // ... other diagonal movements
+        }
+      }),
+      actions: Actions({
+        place: Place,
+        point: Point,
+        ready: Ready,
+        setActiveItemIndex,
+        up: Action("up", () => {
+          // Fly/swim upward
+          const { position } = bob.components
+          let factor = 0.015
+          if (position.data.swimming) {
+            factor = 0.01 * (0.3 + position.submerged())
+          }
+          position.impulse({ z: factor })
+        }),
+        down: Action("down", () => {
+          // Fly/swim downward
+          const { position } = bob.components
+          let factor = 0.015
+          if (position.data.swimming) {
+            factor = 0.01 * (1.3 - position.submerged())
+          }
+          position.impulse({ z: -factor })
+        }),
+        jump: Action("jump", ({ world, params }) => {
+          // Jump with double-jump
+          const { position } = bob.components
+          if (position.data.flying) return
+          if (bob.components.health?.dead()) return
+
+          const state = world.state<BuildState>()
+
+          if (!position.data.standing && state.doubleJumped.includes(bob.id)) return
+          if (!position.data.standing && params.hold) return
+
+          if (!position.data.standing) {
+            position.setVelocity({ z: max(0.05, 0.025 + position.data.velocity.z) })
+            state.doubleJumped.push(bob.id)
+          } else {
+            position.setVelocity({ z: 0.05 })
+          }
+
+          world.client?.sound.play({ name: "bubble", threshold: { pos: position.data, distance: 5 } })
+        }),
+        moveAnalog: Action("moveAnalog", ({ entity, params }) => {
+          // Mobile joystick movement
+        }),
+        move: Action("move", ({ entity, params }) => {
+          // WASD movement with camera-relative direction
+        })
+      }),
+      team: Team(player.components.team.data.team),
+      three: Three({
+        onTick: ({ three, world, client }) => {
+          // Update block preview
+          // Update volume placement wireframe
+        },
+        onRender: ({ entity, world, delta, client, three, since }) => {
+          // Render character model
+          // Handle animations (idle, run, death)
+          // Update camera
+          // Block preview positioning
+        },
+        init: async ({ o, world, three }) => {
+          // Load cowboy.glb model
+          // Set up animations
+          // Create block preview mesh
+          // Create volume placement wireframe
+        }
+      })
+    }
+  })
+
+  return bob
+}
+```
+
+**Key Components:**
+- `Position` - Friction, gravity, swimming support
+- `Inventory` - Blaster and dagger items
+- `Health` - Damage tracking
+- `Input` - Extensive keyboard/mouse controls
+- `Actions` - Movement, jumping, flying, building
+- `Three` - 3D cowboy model with animations
+
+### Build Map
+
+Location: `core/src/games/build/BuildMap.ts`
+
+Pre-built starter map:
+
+```typescript
+export const BuildMap: XYZ[] = [
+  // Platform and structures
+  { x: 0, y: 0, z: -1 },
+  { x: 1, y: 0, z: -1 },
+  // ...
+]
+
+export const BuildMapColoring: Record<string, BlockColor> = {
+  "0,0,-1": "white",
+  "1,0,-1": "gray",
+  // ...
+}
+```
+
+### NPCs
+
+#### Pig
+
+Location: `core/src/games/build/Pig.ts`
+
+Wandering land animal:
+
+```typescript
+export const Pig = (): Entity => Entity({
+  id: "pig",
+  components: {
+    position: Position({
+      x: 0, y: 0, z: 0.4,
+      speed: 0.4,
+      gravity: 0.003
+    }),
+    collider: Collider({ shape: "ball", radius: 0.12 }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        // Random wandering
+        // Change direction occasionally
+      }
+    }),
+    three: Three({
+      // Pig 3D model
+    })
+  }
+})
+```
+
+#### Shork (Shark)
+
+Location: `core/src/games/build/Shork.ts`
+
+Swimming water creature:
+
+```typescript
+export const Shork = (): Entity => Entity({
+  id: "shork",
+  components: {
+    position: Position({
+      x: 0, y: 0, z: -0.6,
+      speed: 0.8,
+      gravity: 0
+    }),
+    collider: Collider({ shape: "ball", radius: 0.15 }),
+    npc: NPC({
+      behavior: (entity, world) => {
+        // Swimming AI
+        // Stay in water
+        // Chase players occasionally
+      }
+    }),
+    three: Three({
+      // Shark 3D model
+    })
+  }
+})
+```
+
+### Water
+
+Location: Entity in entities array
+
+Water plane at z=0:
+
+```typescript
+Water()
+```
+
+Provides:
+- Visual water surface
+- Swimming mechanics when z < 0
+- Buoyancy
+
+## Building Mechanics
+
+### Block Placement
+
+Location: `core/src/games/build/Bob.ts:94`
+
+```typescript
+"mb2": ({ hold, world, character }) => {
+  if (hold && placeCD + 6 > world.tick) return
+  if (!character) return
+
+  placeCD = hold ? world.tick : world.tick + 6
+
+  const dir = world.three!.camera.dir(world)
+  const camera = world.three!.camera.pos()
+  const pos = character.components.position.xyz()
+  const { blockColor } = world.settings<BuildSettings>()
+
+  return { 
+    actionId: "place", 
+    params: { dir, camera, pos, type: 12, blockColor } 
+  }
+}
+```
+
+Features:
+- Raycast from camera to find placement position
+- 6-tick cooldown between placements
+- Custom color per block
+- Hold to place continuously
+
+### Color Selection
+
+Location: `core/src/games/build/Bob.ts:109-127`
+
+```typescript
+"scrolldown": ({ client, world }) => {
+  if (client.bufferScroll < 20) return
+  client.bufferScroll = 0
+  const { blockColor } = world.settings<BuildSettings>()
+  world.game.settings.blockColor = nextColor(blockColor)
+},
+"scrollup": ({ client, world }) => {
+  if (client.bufferScroll > -20) return
+  client.bufferScroll = 0
+  const { blockColor } = world.settings<BuildSettings>()
+  world.game.settings.blockColor = nextColor(blockColor, true)
+}
+```
+
+Scroll wheel cycles through available colors.
+
+### Block Preview
+
+Location: `core/src/games/build/Bob.ts:560`
+
+Visual indicator for placement:
+
+```typescript
+block = new Mesh(new BoxGeometry(0.001, 0.001, 0.001), BlockMaterial())
+block.castShadow = true
+block.frustumCulled = false
+block.rotation.order = "ZXY"
+MarbleTexture(block.material, three)
+```
+
+Updated each frame to show where block will be placed.
+
+### Volume Placement
+
+Location: `core/src/games/build/Bob.ts:178`
+
+Place multiple blocks at once:
+
+```typescript
+"x": ({ hold, world, character, client }) => {
+  if (hold || !character || !wipMesh) return
+
+  // Define cuboid from two corner points
+  if (wipStart && wipEnd) {
+    // Place all blocks in volume
+    for (let x = wipStart.x; x !== wipEnd.x + xDir; x += xDir) {
+      for (let y = wipStart.y; y !== wipEnd.y + yDir; y += yDir) {
+        for (let z = wipStart.z; z !== wipEnd.z + zDir; z += zDir) {
+          world.blocks.add({ x, y, z, type: 12 })
+          world.blocks.coloring[`${x},${y},${z}`] = blockColor
+        }
+      }
+    }
+    client.sound.play({ name: "click2" })
+    wipStart = undefined
+  } else {
+    wipStart = wipEnd  // Set first corner
+  }
+}
+```
+
+## Movement Systems
+
+### Flying
+
+Location: `core/src/games/build/Bob.ts:130`
+
+```typescript
+"f": ({ hold }) => {
+  if (hold) return
+  bob.components.position.data.flying = !bob.components.position.data.flying
+}
+```
+
+Toggle creative flight:
+- No gravity when flying
+- Space/Shift for up/down
+- Faster movement (factor 0.36)
+
+### Swimming
+
+Location: `core/src/games/build/Build.ts:105`
+
+```typescript
+if (flying) {
+  position.data.swimming = false
+} else if (z < -0.2) {
+  position.data.swimming = true
+  // Can't double-jump
+  if (!state.doubleJumped.includes(character.id)) {
+    state.doubleJumped.push(character.id)
+  }
+} else if (z >= 0) {
+  position.data.swimming = false
+}
+```
+
+Automatic swimming when underwater:
+- Slower movement
+- Buoyancy
+- No double jump while swimming
+
+### Double Jump
+
+Location: `core/src/games/build/Bob.ts:243`
+
+```typescript
+if (!position.data.standing && state.doubleJumped.includes(bob.id)) {
+  return  // Already used
+}
+
+if (!position.data.standing) {
+  position.setVelocity({ z: max(0.05, 0.025 + position.data.velocity.z) })
+  state.doubleJumped.push(bob.id)
+} else {
+  position.setVelocity({ z: 0.05 })
+}
+
+// Reset on landing
+if (standing) {
+  state.doubleJumped = state.doubleJumped.filter(id => id !== character.id)
+}
+```
+
+## Camera System
+
+Location: `core/src/games/build/Bob.ts:153`
+
+Toggle perspective:
+
+```typescript
+"q": ({ world, hold }) => {
+  if (hold) return
+  const { camera } = world.three!
+  camera.mode = camera.mode === "first" ? "third" : "first"
+}
+```
+
+Features:
+- First-person: Hides character model
+- Third-person: Shows character
+- Smooth transitions
+- Opacity fading
+
+## Controls
+
+Location: `core/src/games/build/Build.ts:127`
+
+```typescript
+const controls: HUDSystemProps = {
+  clusters: [
+    {
+      label: "place area",
+      buttons: [["x"]]
+    },
+    {
+      label: "fly",
+      buttons: [["f"]]
+    },
+    {
+      label: "shoot|color|place",
+      buttons: [["mb1","mb3","mb2"]],
+      fontSize: "16px"
+    },
+    {
+      label: "move",
+      buttons: [["A", "S", "D"], ["W"]]
+    },
+    {
+      label: "jump",
+      buttons: [["spacebar"]]
+    },
+    {
+      label: "menu",
+      buttons: [["esc"]]
+    }
+  ]
+}
+```
+
+## Key Features
+
+### Creative Freedom
+
+- Unlimited blocks
+- Flight mode
+- Color customization
+- Volume placement
+- No objectives or restrictions
+
+### 3D World
+
+- Three.js rendering
+- Voxel terrain
+- Water with swimming
+- Day/night lighting
+- Shadows
+
+### Collaborative
+
+- Multiplayer building
+- Shared world
+- Rollback netcode
+- Real-time synchronization
+
+### NPCs
+
+- Wandering pigs
+- Swimming sharks
+- Adds life to world
+- Interactive environment
+
+## Related Files
+
+- `Bob.ts` - Player character
+- `Pig.ts` - Land NPC
+- `Shork.ts` - Water NPC
+- `BuildMap.ts` - Starter map
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Craft" href="/games/craft">
+    Survival mode with eagle vs duck
+  </Card>
+  <Card title="Strike" href="/games/strike">
+    FPS with voxel maps
+  </Card>
+</CardGroup>

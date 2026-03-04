@@ -1,0 +1,239 @@
+---
+title: 'DefaultWorld'
+description: 'Pre-configured World factory with essential systems and commands'
+---
+
+## Overview
+
+`DefaultWorld` is a `WorldBuilder` function that creates a `World` instance pre-configured with essential core systems and commands. It's the recommended way to initialize a Piggo world for both client and server applications.
+
+## Type Signature
+
+```typescript
+export const DefaultWorld: WorldBuilder = (props: WorldProps) => World
+```
+
+## What It Includes
+
+`DefaultWorld` initializes a `World` with the following built-in systems:
+
+- **RandomSystem** - Manages deterministic random number generation
+- **ExpiresSystem** - Removes entities with expired TTL
+- **ControlSystem** - Handles character control and input mapping
+- **InputSystem** - Processes keyboard, mouse, and gamepad input
+- **HtmlSystem** - Manages DOM overlay components
+- **CommandSystem** - Processes chat commands
+- **NPCSystem** - AI behavior for non-player characters
+- **ActionSystem** - Executes queued player actions
+- **PositionSystem** - Updates entity positions and transforms
+
+And these commands:
+
+- **GameCommand** - `/game <name>` - Switch between games
+- **DebugCommand** - `/debug` - Toggle debug mode
+
+## Parameters
+
+<ParamField path="props" type="WorldProps" required>
+  Configuration object passed through to the World constructor
+  
+  <ParamField path="commands" type="Command[]" optional>
+    Additional commands to register (merged with default commands)
+  </ParamField>
+  
+  <ParamField path="systems" type="SystemBuilder[]" optional>
+    Additional system builders to initialize (merged with default systems)
+  </ParamField>
+  
+  <ParamField path="three" type="ThreeRenderer" optional>
+    Three.js renderer instance for 3D games
+  </ParamField>
+  
+  <ParamField path="pixi" type="PixiRenderer" optional>
+    Pixi.js renderer instance for 2D games
+  </ParamField>
+  
+  <ParamField path="mode" type="'client' | 'server'" default="'client'">
+    Runtime mode - determines if Client is instantiated
+  </ParamField>
+</ParamField>
+
+## Return Value
+
+<ResponseField name="world" type="World">
+  A fully configured World instance with core systems and commands registered
+</ResponseField>
+
+## Usage Examples
+
+### Client-Side Initialization
+
+```typescript
+import { DefaultWorld, PixiRenderer, ThreeRenderer } from "@piggo-gg/core"
+
+const world = DefaultWorld({
+  three: ThreeRenderer(),
+  pixi: PixiRenderer()
+})
+
+// World is ready to use with both renderers
+// Auto-detects game from URL ?game= parameter
+```
+
+### Server-Side Initialization
+
+```typescript
+import { DefaultWorld } from "@piggo-gg/core"
+
+const world = DefaultWorld({ 
+  mode: "server" 
+})
+
+// No renderers, no client instance
+// Ready for authoritative game logic
+```
+
+### Adding Custom Systems
+
+```typescript
+import { DefaultWorld, SystemBuilder } from "@piggo-gg/core"
+
+const CustomPhysicsSystem: SystemBuilder = {
+  id: "custom-physics",
+  init: (world) => ({
+    id: "custom-physics",
+    priority: 10,
+    query: ["position", "velocity"],
+    onTick: (entities) => {
+      // Custom physics logic
+    }
+  })
+}
+
+const world = DefaultWorld({
+  systems: [CustomPhysicsSystem],
+  pixi: PixiRenderer()
+})
+
+// World now has all default systems PLUS CustomPhysicsSystem
+```
+
+### Adding Custom Commands
+
+```typescript
+import { DefaultWorld, Command } from "@piggo-gg/core"
+
+const TeleportCommand: Command = {
+  id: "teleport",
+  aliases: ["tp"],
+  execute: (world, args) => {
+    const [x, y, z] = args.map(Number)
+    const player = world.players()[0]
+    if (player?.components.position) {
+      player.components.position.x = x
+      player.components.position.y = y
+      player.components.position.z = z
+      world.announce(`Teleported to ${x}, ${y}, ${z}`)
+    }
+  }
+}
+
+const world = DefaultWorld({
+  commands: [TeleportCommand],
+  mode: "client"
+})
+
+// Now players can use /teleport or /tp in chat
+```
+
+### Full Application Example
+
+```typescript
+import { DefaultWorld, PixiRenderer, ThreeRenderer } from "@piggo-gg/core"
+
+export const PiggoGG = () => {
+  const canvas = document.getElementById("piggo-canvas") as HTMLCanvasElement
+  if (!canvas) {
+    throw new Error('Requires <canvas id="piggo-canvas">')
+  }
+
+  const world = DefaultWorld({
+    three: ThreeRenderer(),
+    pixi: PixiRenderer()
+  })
+
+  // Expose for debugging
+  window.world = world
+
+  // World is now running with tick loop active
+  // Will load "lobby" game by default
+}
+```
+
+## Implementation
+
+Here's the complete source code of `DefaultWorld`:
+
+```typescript
+import {
+  ActionSystem, CommandSystem, ControlSystem, DebugCommand,
+  ExpiresSystem, GameCommand, HtmlSystem, InputSystem, NPCSystem, PositionSystem,
+  RandomSystem, World, WorldBuilder, WorldProps
+} from "@piggo-gg/core"
+
+export const DefaultWorld: WorldBuilder = (props: WorldProps) => World({
+  ...props,
+  commands: [GameCommand, DebugCommand],
+  systems: [
+    RandomSystem, ExpiresSystem, ControlSystem, InputSystem,
+    HtmlSystem, CommandSystem, NPCSystem, ActionSystem, PositionSystem
+  ]
+})
+```
+
+## System Execution Order
+
+The default systems run in this priority order during each tick:
+
+1. **RandomSystem** - Updates RNG seed
+2. **ExpiresSystem** - Removes expired entities
+3. **ControlSystem** - Maps input to character actions
+4. **InputSystem** - Processes raw input events
+5. **HtmlSystem** - Updates DOM components
+6. **CommandSystem** - Executes chat commands
+7. **NPCSystem** - Updates AI behavior
+8. **ActionSystem** - Executes queued actions
+9. **PositionSystem** - Updates positions and transforms
+
+<Note>
+  System execution order is determined by the `priority` field in each system. Lower numbers execute first.
+</Note>
+
+## Notes
+
+<Note>
+  `DefaultWorld` automatically merges any custom systems and commands you provide with the default ones, so you don't lose the core functionality.
+</Note>
+
+<Note>
+  When `mode` is "server", no `Client` instance is created, saving resources for dedicated servers.
+</Note>
+
+<Note>
+  Both `three` and `pixi` renderers can be provided simultaneously. The World will activate the appropriate one based on each game's `renderer` field.
+</Note>
+
+<Note>
+  The tick loop starts automatically when `DefaultWorld` returns. You don't need to manually start it.
+</Note>
+
+<Note>
+  The initial game is determined by the `?game=` URL parameter (client mode) or defaults to "lobby".
+</Note>
+
+## See Also
+
+- [World API](/api/world) - Core World type documentation
+- [Game API](/api/game) - Game and GameBuilder types
+- [System Guide](/guides/systems) - Creating custom systems
+- [Command Guide](/guides/commands) - Creating custom commands

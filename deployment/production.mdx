@@ -1,0 +1,528 @@
+---
+title: 'Production Deployment'
+description: 'Deploy Piggo Games server to production with Docker'
+---
+
+Deploy your Piggo Games server to production using Docker containers with PostgreSQL.
+
+## Docker Setup
+
+The project includes a Dockerfile (Dockerfile:1-21) optimized for Bun runtime:
+
+```dockerfile
+from oven/bun:1.2.21-slim
+
+# openssl for postgres
+run apt-get update -y && apt-get install -y openssl
+
+# add package.json
+add package.json package.json
+
+# add top-level modules
+add core core
+add docs docs
+add web web
+add server server
+add electron electron
+
+# install dependencies
+run bun install --production
+
+# run the server
+cmd [ "bun", "prod" ]
+```
+
+### Features
+
+- **Base Image**: `oven/bun:1.2.21-slim` for minimal size
+- **OpenSSL**: Required for PostgreSQL SSL connections
+- **Production Install**: Only production dependencies via `--production` flag
+- **Monorepo**: Includes all workspaces (core, web, server, docs, electron)
+
+## Building the Image
+
+<Steps>
+  <Step title="Build Docker image">
+    From the project root:
+
+    ```bash
+    docker build -t piggo-server .
+    ```
+
+    This creates an image tagged `piggo-server` with all dependencies installed.
+  </Step>
+
+  <Step title="Verify image">
+    Check the image size and details:
+
+    ```bash
+    docker images piggo-server
+    ```
+
+    Expected output:
+    ```
+    REPOSITORY     TAG       SIZE
+    piggo-server   latest    ~250MB
+    ```
+  </Step>
+</Steps>
+
+## Environment Configuration
+
+Create a `.env` file with production settings:
+
+```bash .env
+# Database
+DATABASE_URL="postgresql://piggo:password@postgres:5432/piggo?sslmode=require"
+
+# Authentication
+JWT_SECRET="your-strong-secret-key-here"
+DISCORD_SECRET="your-discord-oauth-secret"
+
+# Server
+PORT=3000
+NODE_ENV="production"
+```
+
+<Warning>
+  Never commit `.env` files to version control. Use secret management tools for production credentials.
+</Warning>
+
+## Docker Compose
+
+Create a `docker-compose.yml` to orchestrate the server and database:
+
+```yaml docker-compose.yml
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_DB: piggo
+      POSTGRES_USER: piggo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U piggo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://piggo:${POSTGRES_PASSWORD}@postgres:5432/piggo
+      JWT_SECRET: ${JWT_SECRET}
+      DISCORD_SECRET: ${DISCORD_SECRET}
+      PORT: 3000
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+```
+
+### Start Services
+
+<Steps>
+  <Step title="Set secrets">
+    Create a `.env` file with your secrets:
+
+    ```bash
+    POSTGRES_PASSWORD=your-db-password
+    JWT_SECRET=your-jwt-secret
+    DISCORD_SECRET=your-discord-secret
+    ```
+  </Step>
+
+  <Step title="Launch containers">
+    Start both services:
+
+    ```bash
+    docker-compose up -d
+    ```
+
+    This:
+    - Starts PostgreSQL with health checks
+    - Waits for database to be ready
+    - Runs migrations via `bun prod` (package.json:11)
+    - Starts the server on port 3000
+  </Step>
+
+  <Step title="View logs">
+    Monitor server startup:
+
+    ```bash
+    docker-compose logs -f server
+    ```
+
+    Expected output:
+    ```
+    包 http://0.0.0.0:3000/
+    ```
+  </Step>
+</Steps>
+
+## Production Build Scripts
+
+The server uses these npm scripts for production (package.json:11, server/package.json:5):
+
+<CodeGroup>
+```bash Production Start
+# Root package.json
+bun prod
+
+# Runs:
+# 1. bun gen - Generate Prisma client
+# 2. bun --cwd server start - Start server
+```
+
+```bash Server Start
+# server/package.json
+bun --cwd server start
+
+# Runs:
+# 1. bun x prisma migrate deploy - Apply migrations
+# 2. bun run --smol src/Api.ts - Start server with memory optimization
+```
+</CodeGroup>
+
+### Startup Sequence
+
+1. **Generate Prisma Client**: Ensures database client is up-to-date
+2. **Deploy Migrations**: Applies any pending database migrations
+3. **Start Server**: Launches API server with `--smol` flag for reduced memory usage
+
+<Note>
+  The `--smol` flag enables Bun's low-memory mode, reducing heap size for production environments.
+</Note>
+
+## Health Checks
+
+Implement health check endpoints for orchestration:
+
+### WebSocket Health
+
+Test WebSocket connection:
+
+```bash
+curl -i -N \
+  -H "Connection: Upgrade" \
+  -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" \
+  -H "Sec-WebSocket-Key: test" \
+  http://localhost:3000/
+```
+
+Expected response:
+```
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+```
+
+### Database Health
+
+Add a health endpoint to `server/src/Api.ts`:
+
+```typescript
+if (url.pathname === "/health") {
+  try {
+    await prisma.$queryRaw`SELECT 1`
+    return new Response(JSON.stringify({ status: "ok" }), {
+      headers: { "Content-Type": "application/json" }
+    })
+  } catch (e) {
+    return new Response(JSON.stringify({ status: "error", message: e.message }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" }
+    })
+  }
+}
+```
+
+## Deployment Platforms
+
+### Fly.io
+
+Deploy with Fly.io:
+
+<Steps>
+  <Step title="Install flyctl">
+    ```bash
+    curl -L https://fly.io/install.sh | sh
+    ```
+  </Step>
+
+  <Step title="Create app">
+    ```bash
+    fly launch --name piggo-server
+    ```
+  </Step>
+
+  <Step title="Attach Postgres">
+    ```bash
+    fly postgres create --name piggo-db
+    fly postgres attach piggo-db
+    ```
+
+    This automatically sets `DATABASE_URL`.
+  </Step>
+
+  <Step title="Set secrets">
+    ```bash
+    fly secrets set JWT_SECRET=your-secret
+    fly secrets set DISCORD_SECRET=your-discord-secret
+    ```
+  </Step>
+
+  <Step title="Deploy">
+    ```bash
+    fly deploy
+    ```
+  </Step>
+</Steps>
+
+### Railway
+
+Deploy with Railway:
+
+<Steps>
+  <Step title="Create project">
+    ```bash
+    railway init
+    ```
+  </Step>
+
+  <Step title="Add PostgreSQL">
+    In the Railway dashboard:
+    - Click "New" → "Database" → "PostgreSQL"
+    - Copy the connection string to `DATABASE_URL`
+  </Step>
+
+  <Step title="Configure variables">
+    Set environment variables in Railway dashboard:
+    - `JWT_SECRET`
+    - `DISCORD_SECRET`
+    - `PORT=3000`
+  </Step>
+
+  <Step title="Deploy">
+    ```bash
+    railway up
+    ```
+  </Step>
+</Steps>
+
+### DigitalOcean App Platform
+
+<Steps>
+  <Step title="Create app">
+    Connect your GitHub repository in the DO dashboard
+  </Step>
+
+  <Step title="Configure build">
+    - **Dockerfile**: Use existing Dockerfile
+    - **HTTP Port**: 3000
+    - **Health Check**: `/health` (if implemented)
+  </Step>
+
+  <Step title="Add database">
+    Create a managed PostgreSQL database and link it to your app
+  </Step>
+
+  <Step title="Set environment variables">
+    Add via App Platform console:
+    - `DATABASE_URL` (auto-set if linked)
+    - `JWT_SECRET`
+    - `DISCORD_SECRET`
+  </Step>
+</Steps>
+
+## Monitoring
+
+### Server Logs
+
+The server logs key events (server/src/Api.ts:393, 401, 420, 427):
+
+```bash
+client connected 192.168.1.1
+<< playerName {"route":"lobby/create","lobbyId":"abc123"}
+>> playerName {"route":"lobby/create","lobbyId":"abc123"} ms:2.5
+id:player1 name:playerName connected 192.168.1.1
+client disconnected 192.168.1.1
+```
+
+### Metrics to Track
+
+- **Active Connections**: `keys(api.clients).length`
+- **Active Lobbies**: `keys(api.worlds).length`
+- **Request Latency**: Logged in milliseconds per request
+- **Client Lag**: Tracked per client in `latestClientLag`
+
+### Example Monitoring Setup
+
+Add Prometheus metrics:
+
+```typescript
+let activeConnections = 0
+let activeLobbies = 0
+let requestCount = 0
+
+// Update on connection
+handleOpen: (ws) => {
+  activeConnections++
+}
+
+// Expose metrics endpoint
+if (url.pathname === "/metrics") {
+  return new Response(`
+    # HELP active_connections Current WebSocket connections
+    # TYPE active_connections gauge
+    active_connections ${keys(api.clients).length}
+
+    # HELP active_lobbies Current game lobbies
+    # TYPE active_lobbies gauge
+    active_lobbies ${keys(api.worlds).length}
+
+    # HELP request_total Total requests processed
+    # TYPE request_total counter
+    request_total ${requestCount}
+  `, {
+    headers: { "Content-Type": "text/plain" }
+  })
+}
+```
+
+## Scaling Considerations
+
+### Horizontal Scaling
+
+For multiple server instances, you need:
+
+1. **Shared State**: Move `api.worlds` to Redis
+2. **Session Affinity**: Route players to the same server (sticky sessions)
+3. **Load Balancer**: Distribute WebSocket connections
+
+### Vertical Scaling
+
+The server scales well vertically:
+
+- Each lobby is isolated in its own `ServerWorld`
+- Empty lobbies are cleaned up every 2 seconds (server/src/Api.ts:441-449)
+- Memory usage grows with concurrent players
+
+### Database Optimization
+
+- **Connection Pool**: Use PgBouncer for connection pooling
+- **Indexes**: Already optimized for score and friend lookups
+- **Read Replicas**: For analytics queries (high scores, stats)
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Server exits immediately">
+    Check that migrations completed successfully:
+
+    ```bash
+    docker-compose logs server | grep prisma
+    ```
+
+    Manually run migrations:
+    ```bash
+    docker-compose exec server bun x prisma migrate deploy --schema=server/src/db/schema.prisma
+    ```
+  </Accordion>
+
+  <Accordion title="WebSocket upgrade fails">
+    Verify CORS origins in `ValidOrigins` include your domain:
+
+    ```typescript
+    // In @piggo-gg/core
+    export const ValidOrigins = [
+      "http://localhost:5173",
+      "https://yourdomain.com"
+    ]
+    ```
+  </Accordion>
+
+  <Accordion title="Database connection timeout">
+    Check `DATABASE_URL` is accessible from container:
+
+    ```bash
+    docker-compose exec server sh -c 'pg_isready -d $DATABASE_URL'
+    ```
+
+    Ensure database hostname matches service name in docker-compose.
+  </Accordion>
+
+  <Accordion title="High memory usage">
+    The `--smol` flag is already enabled in production. Monitor with:
+
+    ```bash
+    docker stats piggo-server
+    ```
+
+    Consider reducing `tickrate` or lobby limits if needed.
+  </Accordion>
+</AccordionGroup>
+
+## Security Best Practices
+
+<Warning>
+  Follow these security guidelines for production deployments.
+</Warning>
+
+### Environment Variables
+
+- Never hardcode secrets in source code
+- Use secret management (AWS Secrets Manager, Vault, etc.)
+- Rotate `JWT_SECRET` periodically
+- Use strong, random passwords (32+ characters)
+
+### Network Security
+
+- Enable SSL/TLS for PostgreSQL connections (`?sslmode=require`)
+- Use HTTPS for WebSocket upgrades (WSS)
+- Restrict database access to server IP only
+- Configure firewall rules (only ports 80/443 public)
+
+### Database Security
+
+- Use dedicated database user with minimal permissions
+- Enable statement timeout to prevent long-running queries
+- Regular backups with point-in-time recovery
+- Encrypt database at rest
+
+### Application Security
+
+- Validate all user inputs before database queries
+- Use parameterized queries (Prisma handles this)
+- Rate limit WebSocket connections per IP
+- Implement request size limits
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Server Setup" icon="server" href="/deployment/server-setup">
+    Learn about API server configuration
+  </Card>
+  <Card title="Database" icon="database" href="/deployment/database">
+    Configure Prisma and migrations
+  </Card>
+  <Card title="Monitor Performance" icon="chart-line">
+    Set up Prometheus and Grafana dashboards
+  </Card>
+  <Card title="CI/CD Pipeline" icon="code-branch">
+    Automate testing and deployment
+  </Card>
+</CardGroup>

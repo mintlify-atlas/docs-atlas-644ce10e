@@ -1,0 +1,628 @@
+---
+title: Components
+description: Component API reference for Piggo's ECS architecture
+---
+
+## Overview
+
+Components are atomic bundles of data attached to entities. Each component has a `type` field and optional `data` field containing networked state.
+
+## Core Types
+
+### Component
+
+```typescript
+type Component<
+  type extends string = string,
+  D extends NetworkedComponentData | undefined = undefined
+> = {
+  type: type
+  active?: boolean
+} & (D extends undefined ? {} : { data: D })
+```
+
+The base component type. All components extend this structure.
+
+<ParamField path="type" type="string" required>
+  Unique identifier for the component type
+</ParamField>
+
+<ParamField path="active" type="boolean">
+  Whether the component is currently active
+</ParamField>
+
+<ParamField path="data" type="NetworkedComponentData">
+  Networked data object containing the component's state
+</ParamField>
+
+### NetworkedComponentData
+
+```typescript
+type NetworkedComponentData = Record<string,
+  null | boolean | string | number |
+  string[] | number[] |
+  (string[] | undefined)[] | XY | Date
+>
+```
+
+Valid types for component data that can be synchronized over the network.
+
+## Built-in Components
+
+<AccordionGroup>
+  <Accordion title="Position" icon="location-dot">
+    The entity's position and movement in world space.
+
+    ```typescript
+    Position(props?: PositionProps): Position
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Position = Component<"position", {
+      x: number
+      y: number
+      z: number
+      aim: XY
+      facing: -1 | 1
+      follows: string | null
+      friction: boolean
+      flying: boolean
+      gravity: number
+      heading: XY
+      offset: XY
+      pointing: Oct
+      pointingDelta: XY
+      recoil: number
+      rotating: number
+      rotation: number
+      speed: number
+      standing: boolean
+      stop: number
+      swimming: boolean
+      tether: null | XYZ & { dist: number }
+      velocity: XYZ
+      velocityResets: number
+    }>
+    ```
+
+    **Methods**
+    - `setPosition({ x?, y?, z? })` - Update entity position
+    - `setVelocity({ x?, y?, z? })` - Set velocity vector
+    - `impulse({ x?, y?, z? })` - Add impulse to velocity
+    - `setHeading(xy: XY)` - Set target heading
+    - `clearHeading()` - Clear movement heading
+    - `interpolate(world, delta)` - Get interpolated position
+    - `xyz()` - Get position as XYZ object
+
+    **Example**
+    ```typescript core/src/ecs/entities/characters/Skelly.ts
+    position: Position({
+      x: 0,
+      y: 150,
+      z: 50,
+      velocityResets: 1,
+      speed: 125,
+      gravity: 0.3
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Health" icon="heart">
+    Health points and death state tracking.
+
+    ```typescript
+    Health(props?: HealthProps): Health
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Health = Component<"health", {
+      hp: number
+      maxHp: number
+      died: null | number
+      diedFrom: null | string
+      diedReason: null | string
+      kda: KDAstring
+    }>
+    ```
+
+    **Methods**
+    - `damage(amount, world, from?, reason?)` - Apply damage
+    - `alive()` - Returns true if hp > 0
+    - `dead()` - Returns true if hp is less than or equal to 0
+    - `revive()` - Restore to full health
+    - `getKDA()` - Get kills/deaths/assists object
+    - `setKDA(kda)` - Update KDA stats
+
+    **Example**
+    ```typescript core/src/ecs/entities/characters/Skelly.ts
+    health: Health({ hp: 100 })
+    ```
+  </Accordion>
+
+  <Accordion title="Actions" icon="bolt">
+    Map of executable actions for an entity.
+
+    ```typescript
+    Actions(actionMap?: ActionMap): Actions
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Actions = Component<"actions"> & {
+      actionMap: Record<string, Action>
+    }
+    ```
+
+    **Example**
+    ```typescript core/src/ecs/entities/characters/Skelly.ts
+    actions: Actions({
+      move: Move,
+      point: Point,
+      setActiveItemIndex,
+      dropItem,
+      jump: Action("jump", ({ entity }) => {
+        if (!entity?.components?.position?.data.standing) return
+        entity.components.position.setVelocity({ z: 5 })
+      })
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Input" icon="keyboard">
+    Keyboard, mouse, and joystick input mapping.
+
+    ```typescript
+    Input(inputMap?: Partial<InputMap>): Input
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Input = Component<"input"> & {
+      inputMap: {
+        press: Record<string, KeyHandler>
+        release: Record<string, KeyHandler>
+        joystick: JoystickHandler
+      }
+    }
+    ```
+
+    **Example**
+    ```typescript core/src/ecs/entities/characters/Skelly.ts
+    input: Input({
+      press: {
+        ...WASDInputMap.press,
+        " ": () => ({ actionId: "jump" }),
+        "r": () => ({ actionId: "jetpack" }),
+        "1": () => ({ actionId: "setActiveItemIndex", params: { index: 0 } })
+      }
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Collider" icon="expand">
+    Physics collision shape using Rapier2D.
+
+    ```typescript
+    Collider(props: ColliderProps): Collider
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Collider = Component<"collider"> & {
+      shape: "ball" | "cuboid" | "line" | "ellipse"
+      radius?: number
+      width?: number
+      length?: number
+      isStatic: boolean
+      hittable: boolean
+      sensor: SensorCallback
+      group: keyof typeof ColliderGroups
+    }
+    ```
+
+    **Methods**
+    - `setGroup(group)` - Change collision group
+
+    **Example**
+    ```typescript core/src/ecs/entities/characters/Skelly.ts
+    collider: Collider({
+      shape: "ball",
+      radius: 4,
+      hittable: true
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Renderable" icon="image">
+    Pixi.js rendering with animations and filters.
+
+    ```typescript
+    Renderable(props: RenderableProps): Renderable
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Renderable = Component<"renderable"> & {
+      c: Container
+      animations: Record<string, AnimatedSprite>
+      animationSelect: ((entity, world) => string) | null
+      interpolate: boolean
+      visible: boolean
+      zIndex: number
+      onRender?: (delta, since) => void
+      onTick?: () => void
+    }
+    ```
+
+    **Methods**
+    - `setAnimation(key)` - Switch to animation
+    - `setScale(xy)` - Update render scale
+    - `setBloom(props?)` - Apply bloom filter
+    - `setGlow(props?)` - Apply glow filter
+    - `setOutline(props?)` - Apply outline filter
+
+    **Example**
+    ```typescript core/src/ecs/entities/characters/Skelly.ts
+    renderable: Renderable({
+      anchor: { x: 0.55, y: 0.9 },
+      scale: 1.2,
+      zIndex: 4,
+      interpolate: true,
+      scaleMode: "nearest",
+      animationSelect: VolleyCharacterAnimations,
+      onTick: VolleyCharacterDynamic
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Networked" icon="network-wired">
+    Marks entity for network synchronization.
+
+    ```typescript
+    Networked(props?: NetworkedProps): Networked
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Networked = Component<"networked"> & {
+      isNetworked: boolean
+    }
+    ```
+
+    **Example**
+    ```typescript
+    networked: Networked()
+    ```
+  </Accordion>
+
+  <Accordion title="PC" icon="user">
+    Player character metadata.
+
+    ```typescript
+    PC(props: { name: string, leader?: boolean }): PC
+    ```
+
+    **Type Definition**
+    ```typescript
+    type PC = Component<"pc", {
+      leader: boolean
+      name: string
+      points: number
+      ready: boolean
+    }>
+    ```
+
+    **Example**
+    ```typescript core/src/ecs/entities/players/Player.ts
+    pc: PC({ name: "noob", leader: false })
+    ```
+  </Accordion>
+
+  <Accordion title="NPC" icon="robot">
+    AI behavior controller.
+
+    ```typescript
+    NPC<T>(props: NPCProps<T>): NPC
+    ```
+
+    **Type Definition**
+    ```typescript
+    type NPC = Component<"npc"> & {
+      behavior: (entity, world) => InvokedAction | null | void
+    }
+    ```
+
+    **Example**
+    ```typescript
+    npc: NPC({
+      behavior: (entity, world) => {
+        if (world.tick % 40 === 0) {
+          return { actionId: "move", params: { x: 1, y: 0 } }
+        }
+      }
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Controlling" icon="gamepad">
+    Links a player to their controlled character.
+
+    ```typescript
+    Controlling(props?: ControllingProps): Controlling
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Controlling = Component<"controlling", {
+      entityId: string
+    }>
+    ```
+
+    **Methods**
+    - `getCharacter(world)` - Get controlled character entity
+
+    **Example**
+    ```typescript core/src/ecs/entities/players/Player.ts
+    controlling: Controlling()
+    ```
+  </Accordion>
+
+  <Accordion title="Team" icon="users">
+    Team assignment for multiplayer games.
+
+    ```typescript
+    Team(teamNumber: 1 | 2, hides?: boolean): Team
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Team = Component<"team", {
+      team: TeamNumber
+    }> & {
+      visible: boolean
+      hides: boolean
+    }
+    ```
+
+    **Methods**
+    - `switchTeam()` - Toggle between team 1 and 2
+
+    **Example**
+    ```typescript
+    team: Team(1)
+    ```
+  </Accordion>
+
+  <Accordion title="Expires" icon="clock">
+    Auto-remove entity after specified ticks.
+
+    ```typescript
+    Expires(props: ExpiresProps): Expires
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Expires = Component<"expires", {
+      ticksLeft: number
+    }> & {
+      onExpire: () => void
+    }
+    ```
+
+    **Example**
+    ```typescript
+    expires: Expires({
+      ticksLeft: 100,
+      onExpire: () => console.log("Expired!")
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Html" icon="code">
+    DOM element overlay.
+
+    ```typescript
+    Html(props?: HtmlProps): Html
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Html = Component<"html"> & {
+      element: HTMLElement | undefined
+      init?: (world) => HTMLElement | null
+      setup?: (html, world) => void
+      onTick?: (world) => void
+    }
+    ```
+
+    **Methods**
+    - `cleanup()` - Remove element from DOM
+
+    **Example**
+    ```typescript
+    html: Html({
+      init: (world) => {
+        const div = document.createElement('div')
+        div.textContent = 'Hello World'
+        return div
+      }
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Inventory" icon="backpack">
+    Item storage and management.
+
+    ```typescript
+    Inventory(itemBuilders?: ItemBuilder[]): Inventory
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Inventory = Component<"inventory", {
+      items: (string[] | undefined)[]
+      activeItemIndex: number
+    }>
+    ```
+
+    **Methods**
+    - `activeItem(world)` - Get currently equipped item
+    - `addItem(item, world)` - Add item to inventory
+    - `removeItem(itemId, world)` - Remove item
+    - `dropActiveItem()` - Drop equipped item
+    - `setActiveItemIndex(index)` - Switch active slot
+
+    **Example**
+    ```typescript core/src/ecs/entities/characters/Skelly.ts
+    inventory: Inventory([])
+    ```
+  </Accordion>
+
+  <Accordion title="Gun" icon="gun">
+    Weapon statistics and shooting logic.
+
+    ```typescript
+    Gun(props: GunProps): Gun
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Gun = Component<"gun", {
+      automatic: boolean
+      bulletSize: number
+      clip: number
+      clipSize: number
+      damage: number
+      fireRate: number
+      lastShot: number
+      name: "deagle" | "ak" | "awp"
+      reloading: null | number
+      reloadTime: number
+      speed: number
+    }>
+    ```
+
+    **Methods**
+    - `canShoot(world, tick, hold)` - Check if can fire
+    - `didShoot(world)` - Record shot fired
+
+    **Example**
+    ```typescript
+    gun: Gun({
+      automatic: false,
+      bulletSize: 0.1,
+      clipSize: 7,
+      damage: 20,
+      fireRate: 10,
+      name: "deagle",
+      reloadTime: 50,
+      speed: 1
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Data" icon="database">
+    Generic networked data storage.
+
+    ```typescript
+    Data(props: DataProps): Data
+    ```
+
+    **Type Definition**
+    ```typescript
+    type Data = Component<"data", NetworkedComponentData> & {
+      set(key: string, value: any): void
+    }
+    ```
+
+    **Example**
+    ```typescript
+    data: Data({ data: { score: 0, level: 1 } })
+    ```
+  </Accordion>
+
+  <Accordion title="Three" icon="cube">
+    Three.js 3D rendering component.
+
+    **Example**
+    ```typescript core/src/ecs/actions/attacks/Blaster.ts
+    three: Three({
+      init: async ({ o, three }) => {
+        three.gLoader.load("flintlock.gltf", (gltf) => {
+          const mesh = gltf.scene
+          mesh.scale.set(0.01, 0.01, 0.01)
+          o.push(mesh)
+        })
+      },
+      onRender: ({ world, delta, client }) => {
+        // Update 3D model each frame
+      }
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Effects" icon="sparkles">
+    Visual and sound effect triggers.
+  </Accordion>
+
+  <Accordion title="Hitbox" icon="square">
+    3D hitbox shapes for raycasting.
+  </Accordion>
+
+  <Accordion title="Element" icon="fire">
+    Material type (flesh, metal, wood, etc).
+  </Accordion>
+
+  <Accordion title="Shadow" icon="moon">
+    Shadow rendering settings.
+  </Accordion>
+
+  <Accordion title="Item" icon="cube">
+    Item metadata and callbacks.
+  </Accordion>
+
+  <Accordion title="Money" icon="dollar-sign">
+    Currency component.
+  </Accordion>
+
+  <Accordion title="Food" icon="apple-whole">
+    Consumable food item.
+  </Accordion>
+
+  <Accordion title="Hover" icon="hand-pointer">
+    Mouse hover interaction.
+  </Accordion>
+
+  <Accordion title="Debug" icon="bug">
+    Debug information display.
+  </Accordion>
+</AccordionGroup>
+
+## Serialization
+
+### serializeComponent
+
+```typescript
+serializeComponent(c: Component): NetworkedComponentData
+```
+
+Serialize a component's data for network transmission.
+
+### deserializeComponent
+
+```typescript
+deserializeComponent(
+  c: Component,
+  data: NetworkedComponentData
+): void
+```
+
+Deserialize network data into a component.
+
+## See Also
+
+- [Entity API](/api/ecs/entities) - Entity creation and management
+- [System API](/api/ecs/systems) - Systems that process components
+- [Action API](/api/ecs/actions) - Actions that modify components

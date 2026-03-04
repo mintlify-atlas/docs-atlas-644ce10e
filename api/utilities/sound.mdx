@@ -1,0 +1,440 @@
+---
+title: Sound System
+description: Audio playback and music management for Piggo Games
+---
+
+The sound system provides audio playback using Tone.js with automatic muting, distance-based attenuation, and music management.
+
+## Sound Types
+
+### ValidSounds
+
+```typescript
+type ValidSounds =
+  | BounceSounds    // "bounce1" | "bounce2" | "bounce3" | "bounce4"
+  | BubbleSounds    // "bubble" | "hitmarker" | "dice1" | "dice2" | "throw" | "jingle1" | "f9"
+  | MusicSounds     // "track1"
+  | ClickSounds     // "click1" | "click2" | "click3" | "cassettePlay" | "cassetteStop" | "reload" | "clink"
+  | ToolSounds      // "whiff" | "thud" | "slash"
+  | EatSounds       // "eat" | "eat2"
+  | VolleySounds    // "spike"
+  | HoopsSounds     // "swish"
+  | LaserSounds     // "laser1"
+  | MovementSounds  // "whoosh"
+  | GunNames        // "deagle" | "ak" | "awp"
+```
+
+All available sound effects and music tracks.
+
+## Sound Interface
+
+```typescript
+type Sound = {
+  music: MusicSounds
+  muted: boolean
+  ready: boolean
+  state: "closed" | "running" | "suspended" | "interrupted"
+  tones: Record<ValidSounds, Tone>
+  stop: (name: ValidSounds) => void
+  stopMusic: () => void
+  stopAll: () => void
+  musicPlaying: () => boolean
+  play: (props: SoundPlayProps) => boolean
+  playChoice: (options: ValidSounds[], props?: Omit<SoundPlayProps, "name">) => boolean
+}
+```
+
+## Creating Sound System
+
+```typescript
+const Sound = (world: World): Sound
+```
+
+Creates a sound system instance. Automatically handles tab visibility and window focus for muting.
+
+```typescript
+// In your client setup
+const sound = Sound(world)
+world.client.sound = sound
+```
+
+## Playing Sounds
+
+### play
+
+```typescript
+play(props: SoundPlayProps): boolean
+```
+
+Plays a sound effect or music track. Returns true if playback started successfully.
+
+<ParamField path="props" type="SoundPlayProps" required>
+  Playback configuration
+</ParamField>
+
+#### SoundPlayProps
+
+<ParamField path="name" type="ValidSounds" required>
+  Name of the sound to play
+</ParamField>
+
+<ParamField path="start" type="number | string" default="0">
+  Start time offset in seconds or Tone.js time notation (e.g., "+1")
+</ParamField>
+
+<ParamField path="fadeIn" type="number | string" default="0">
+  Fade in duration in seconds or Tone.js time notation
+</ParamField>
+
+<ParamField path="threshold" type="{ pos: XY, distance: number }">
+  Distance-based attenuation. Sound only plays if player is within distance
+</ParamField>
+
+<ParamField path="volume" type="number">
+  Volume multiplier (default uses preset volume)
+</ParamField>
+
+```typescript
+// Simple sound playback
+world.client?.sound.play({ name: "click1" })
+
+// With fade in
+world.client?.sound.play({
+  name: "track1",
+  fadeIn: "+1" // Fade in over 1 second
+})
+
+// Distance-based sound (used in Spike action - volley/Spike.ts:64)
+world.client?.sound.play({
+  name: "spike",
+  threshold: {
+    pos: { x: ballPos.x, y: ballPos.y },
+    distance: 100
+  }
+})
+
+// Custom volume
+world.client?.sound.play({
+  name: "explosion",
+  volume: 1.5
+})
+```
+
+### playChoice
+
+```typescript
+playChoice(options: ValidSounds[], props?: Omit<SoundPlayProps, "name">): boolean
+```
+
+Plays a random sound from the provided options.
+
+<ParamField path="options" type="ValidSounds[]" required>
+  Array of sound names to choose from
+</ParamField>
+
+<ParamField path="props" type="Omit<SoundPlayProps, 'name'>">
+  Additional playback options (start, fadeIn, threshold, volume)
+</ParamField>
+
+```typescript
+// Random bounce sound
+world.client?.sound.playChoice([
+  "bounce1", "bounce2", "bounce3", "bounce4"
+])
+
+// Random eating sound with distance check
+world.client?.sound.playChoice(
+  ["eat", "eat2"],
+  {
+    threshold: {
+      pos: playerPos,
+      distance: 50
+    }
+  }
+)
+```
+
+## Stopping Sounds
+
+### stop
+
+```typescript
+stop(name: ValidSounds): void
+```
+
+Stops a specific sound.
+
+```typescript
+world.client?.sound.stop("track1")
+```
+
+### stopMusic
+
+```typescript
+stopMusic(): void
+```
+
+Stops all music tracks.
+
+```typescript
+// Used in MusicBox (sound/MusicBox.ts:201)
+world.client?.sound.stopMusic()
+```
+
+### stopAll
+
+```typescript
+stopAll(): void
+```
+
+Stops all sounds except music (music is muted instead).
+
+```typescript
+// Automatically called when tab loses focus
+window.addEventListener("blur", () => {
+  sound.stopAll()
+})
+```
+
+## Music Management
+
+### musicPlaying
+
+```typescript
+musicPlaying(): boolean
+```
+
+Checks if music is currently playing.
+
+```typescript
+if (!world.client?.sound.musicPlaying()) {
+  world.client?.sound.play({ name: "track1" })
+}
+```
+
+### music
+
+```typescript
+music: MusicSounds
+```
+
+Currently selected music track.
+
+### muted
+
+```typescript
+muted: boolean
+```
+
+Mute state. Automatically set based on tab visibility and window focus.
+
+## State Properties
+
+### ready
+
+```typescript
+ready: boolean
+```
+
+Indicates if sound system is ready to play audio.
+
+### state
+
+```typescript
+state: "closed" | "running" | "suspended" | "interrupted"
+```
+
+Audio context state.
+
+### tones
+
+```typescript
+tones: Record<ValidSounds, Tone>
+```
+
+Access to underlying Tone.js player instances.
+
+## Usage Examples
+
+### Game Actions
+
+```typescript
+import { Action } from "@piggo-gg/core"
+
+// Play sound on action (used in volley/Spike.ts:64)
+const Spike = () => Action<{ target: XY }>("spike", ({ world, params }) => {
+  // Perform spike logic...
+  
+  // Play spike sound
+  world.client?.sound.play({ name: "spike" })
+  
+  // Update ball physics...
+})
+```
+
+### UI Interactions
+
+```typescript
+import { HButton } from "@piggo-gg/core"
+
+// Button with click sound
+const button = HButton({
+  text: "Start Game",
+  onClick: ({ world }) => {
+    world.client?.sound.play({ name: "click1" })
+    startGame()
+  },
+  onHover: ({ world }) => {
+    world.client?.sound.play({ name: "click3" })
+  }
+})
+```
+
+### Music Player
+
+```typescript
+// Music box implementation (sound/MusicBox.ts:188-209)
+disc.onclick = () => {
+  if (state === "stop") {
+    state = "play"
+    world.client?.sound.play({ name: "cassettePlay" })
+    world.client?.sound.play({
+      name: tracks[trackIndex],
+      fadeIn: "+1"
+    })
+  } else {
+    state = "stop"
+    world.client?.sound.play({ name: "cassetteStop" })
+    world.client?.sound.stop(tracks[trackIndex])
+  }
+}
+```
+
+### Distance-Based Audio
+
+```typescript
+// Footstep sounds only when near
+if (entity.components.position.data.velocity.x !== 0) {
+  world.client?.sound.playChoice(
+    ["step1", "step2", "step3"],
+    {
+      threshold: {
+        pos: entity.components.position.data,
+        distance: 200 // Only audible within 200 units
+      }
+    }
+  )
+}
+```
+
+### Weapon Sounds
+
+```typescript
+import { GunNames } from "@piggo-gg/core"
+
+const fireWeapon = (gunType: GunNames) => {
+  // Play gun sound
+  world.client?.sound.play({ name: gunType })
+  
+  // Play reload sound after firing
+  setTimeout(() => {
+    world.client?.sound.play({ name: "reload" })
+  }, 1000)
+}
+
+fireWeapon("deagle")
+```
+
+### Randomized Effects
+
+```typescript
+// Bounce sound with variation
+if (ball.components.position.data.z === 0) {
+  world.client?.sound.playChoice([
+    "bounce1", "bounce2", "bounce3", "bounce4"
+  ])
+}
+
+// Dice roll sounds
+world.client?.sound.playChoice(["dice1", "dice2"])
+```
+
+### Volume Control
+
+```typescript
+// Dynamic volume based on game state
+const playExplosion = (intensity: number) => {
+  world.client?.sound.play({
+    name: "explosion",
+    volume: intensity // 0.5 to 2.0
+  })
+}
+
+playExplosion(1.5) // Louder explosion
+```
+
+### Background Music Loop
+
+```typescript
+// Auto-play next track when current ends (sound/MusicBox.ts:69-73)
+onTick: ({ world }) => {
+  const currentSong = sound.tones[tracks[trackIndex]]
+  
+  if (state === "play" && currentSong?.state === "stopped") {
+    trackIndex = (trackIndex + 1) % tracks.length
+    sound.play({ name: tracks[trackIndex] })
+  }
+}
+```
+
+### Conditional Sound Playback
+
+```typescript
+// Only play if not muted and conditions met
+const playIfValid = (soundName: ValidSounds) => {
+  const sound = world.client?.sound
+  if (!sound || sound.muted) return
+  
+  if (gameState.canPlaySounds) {
+    sound.play({ name: soundName })
+  }
+}
+```
+
+## Automatic Muting
+
+The sound system automatically mutes based on browser state:
+
+```typescript
+// Tab hidden/visible (sound/Sound.ts:52-55)
+document.addEventListener("visibilitychange", () => {
+  sound.muted = document.hidden
+  if (document.hidden) sound.stopAll()
+})
+
+// Window blur/focus (sound/Sound.ts:58-64)
+window.addEventListener("blur", () => {
+  sound.muted = true
+  sound.stopAll()
+})
+
+window.addEventListener("focus", () => {
+  sound.muted = false
+})
+```
+
+## Available Sound Files
+
+All sound files are loaded from the `web/res/` directory:
+
+- **Bounces**: bounce1-4.mp3
+- **UI**: click1-3.mp3, cassettePlay/Stop.mp3
+- **Effects**: bubble.mp3, hitmarker.mp3, throw.mp3, jingle1.mp3
+- **Dice**: dice1-2.mp3
+- **Tools**: whiff.wav, thud.mp3, slash.mp3
+- **Food**: eat.mp3, eat2.mp3
+- **Sports**: spike.mp3, swish.mp3
+- **Weapons**: deagle.mp3, ak.mp3, awp.mp3, reload.mp3, laser1.mp3
+- **Movement**: whoosh.mp3
+- **Music**: track1.mp3
+- **Misc**: clink.mp3, f9.mp3

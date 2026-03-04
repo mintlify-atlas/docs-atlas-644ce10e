@@ -1,0 +1,587 @@
+---
+title: UI Components
+description: Build interactive user interfaces with HTML and canvas overlays
+---
+
+## Overview
+
+Piggo supports multiple UI approaches:
+- **HTML overlays** - DOM elements positioned over the canvas
+- **PixiJS sprites** - 2D graphics rendered on canvas
+- **Three.js meshes** - 3D UI elements in the game world
+
+HTML overlays are best for menus, HUDs, and text. Canvas rendering is best for game objects and effects.
+
+## HTML Components
+
+Piggo provides utility functions for creating styled DOM elements:
+
+<Steps>
+  <Step title="HtmlDiv - Container element">
+    ```typescript core/src/html/HtmlDiv.ts
+    import { HtmlDiv, CSS } from "@piggo-gg/core"
+
+    const container = HtmlDiv({
+      position: "absolute",
+      top: "20px",
+      left: "20px",
+      width: "200px",
+      height: "100px",
+      backgroundColor: "rgba(0, 0, 0, 0.8)",
+      borderRadius: "8px",
+      padding: "10px"
+    })
+
+    document.body.appendChild(container)
+    ```
+
+    **Default styles:**
+    - `position: absolute`
+    - `borderRadius: 8px`
+    - `pointerEvents: none`
+    - Touch event prevention
+  </Step>
+
+  <Step title="HtmlText - Text element">
+    ```typescript core/src/html/HtmlText.ts
+    import { HtmlText } from "@piggo-gg/core"
+
+    const label = HtmlText({
+      text: "Score: 0",
+      style: {
+        position: "absolute",
+        top: "10px",
+        left: "10px",
+        fontSize: "24px",
+        color: "white",
+        fontFamily: "Courier New"
+      }
+    })
+
+    document.body.appendChild(label)
+    
+    // Update text
+    label.textContent = "Score: 100"
+    ```
+
+    **Default styles:**
+    - `fontFamily: Courier New`
+    - `fontWeight: bold`
+    - `fontSize: 20px`
+    - `textShadow: 2px 2px 1px rgba(0,0,0,0.5)`
+  </Step>
+
+  <Step title="HtmlButton - Interactive button">
+    ```typescript core/src/html/HtmlButton.ts
+    import { HtmlButton } from "@piggo-gg/core"
+
+    const button = HtmlButton({
+      text: "Start Game",
+      style: {
+        position: "absolute",
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%, -50%)",
+        width: "200px",
+        height: "60px",
+        fontSize: "24px"
+      },
+      onClick: (event) => {
+        console.log("Button clicked!")
+        // Start game logic
+      },
+      onHover: (event) => {
+        button.style.opacity = "1"
+      },
+      onHoverOut: (event) => {
+        button.style.opacity = "0.8"
+      }
+    })
+
+    document.body.appendChild(button)
+    ```
+
+    **Event handlers:**
+    - `onClick` - Pointer down
+    - `onRelease` - Pointer up
+    - `onHover` - Pointer over
+    - `onHoverOut` - Pointer out
+  </Step>
+</Steps>
+
+## HTML Entity Component
+
+Wrap HTML elements in entities for game integration:
+
+```typescript
+import { Entity, Html, HtmlDiv, HtmlText } from "@piggo-gg/core"
+
+export const Scoreboard = () => {
+  const container = HtmlDiv({
+    position: "absolute",
+    top: "20px",
+    right: "20px",
+    width: "250px",
+    backgroundColor: "rgba(0, 0, 0, 0.7)",
+    borderRadius: "8px",
+    padding: "15px"
+  })
+
+  const title = HtmlText({
+    text: "Scoreboard",
+    style: {
+      fontSize: "24px",
+      marginBottom: "10px"
+    }
+  })
+
+  const scores = HtmlDiv({
+    display: "flex",
+    flexDirection: "column",
+    gap: "5px"
+  })
+
+  container.appendChild(title)
+  container.appendChild(scores)
+
+  return Entity({
+    id: "scoreboard",
+    persists: true,
+    components: {
+      html: Html({
+        element: container,
+        onTick: ({ world }) => {
+          const players = world.players()
+          
+          // Update scores
+          scores.innerHTML = ''
+          players.forEach(player => {
+            const character = player.components.controlling.getCharacter(world)
+            const kda = character?.components.health?.getKDA()
+            
+            if (kda) {
+              const line = HtmlText({
+                text: `${player.components.pc.data.name}: ${kda.k}/${kda.d}/${kda.a}`
+              })
+              scores.appendChild(line)
+            }
+          })
+        }
+      })
+    }
+  })
+}
+```
+
+## Complete UI Examples
+
+### Health Bar
+
+```typescript
+import { Entity, Html, HtmlDiv } from "@piggo-gg/core"
+
+export const HealthBar = (character: Character) => {
+  const container = HtmlDiv({
+    position: "absolute",
+    bottom: "40px",
+    left: "20px",
+    width: "200px",
+    height: "30px",
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    borderRadius: "4px",
+    border: "2px solid white"
+  })
+
+  const bar = HtmlDiv({
+    width: "100%",
+    height: "100%",
+    backgroundColor: "#00ff00",
+    borderRadius: "2px",
+    transition: "width 0.2s"
+  })
+
+  container.appendChild(bar)
+
+  return Entity({
+    id: "health-bar",
+    persists: true,
+    components: {
+      html: Html({
+        element: container,
+        onTick: ({ world }) => {
+          const { health } = character.components
+          if (!health) return
+
+          const percent = (health.data.hp / health.data.maxHp) * 100
+          bar.style.width = `${percent}%`
+          
+          // Color changes based on health
+          if (percent > 60) {
+            bar.style.backgroundColor = '#00ff00'
+          } else if (percent > 30) {
+            bar.style.backgroundColor = '#ffff00'
+          } else {
+            bar.style.backgroundColor = '#ff0000'
+          }
+        }
+      })
+    }
+  })
+}
+```
+
+### Mobile Controls
+
+```typescript core/src/games/island/MobileUI.ts
+import { HtmlButton, HtmlDiv, World } from "@piggo-gg/core"
+
+export const MobileUI = (world: World) => {
+  if (!world.client?.mobile) return null
+
+  const container = HtmlDiv({
+    position: "absolute",
+    bottom: "20px",
+    right: "20px",
+    display: "flex",
+    gap: "10px"
+  })
+
+  const jumpButton = HtmlButton({
+    text: "Jump",
+    style: {
+      width: "80px",
+      height: "80px",
+      fontSize: "18px",
+      borderRadius: "50%"
+    },
+    onClick: () => {
+      const character = world.client?.character()
+      if (character) {
+        world.actions.push(world.tick + 1, character.id, {
+          actionId: "jump"
+        })
+      }
+    }
+  })
+
+  const attackButton = HtmlButton({
+    text: "Attack",
+    style: {
+      width: "80px",
+      height: "80px",
+      fontSize: "18px",
+      borderRadius: "50%",
+      backgroundColor: "rgba(255, 0, 0, 0.4)"
+    },
+    onClick: () => {
+      const character = world.client?.character()
+      if (character) {
+        world.actions.push(world.tick + 1, character.id, {
+          actionId: "attack"
+        })
+      }
+    }
+  })
+
+  container.appendChild(jumpButton)
+  container.appendChild(attackButton)
+  document.body.appendChild(container)
+
+  return {
+    update: () => {
+      // Update button states
+      const character = world.client?.character()
+      if (!character) return
+
+      jumpButton.disabled = !character.components.position.data.standing
+    },
+    cleanup: () => {
+      container.remove()
+    }
+  }
+}
+```
+
+### Menu System
+
+```typescript core/src/ecs/entities/menus/EscapeMenu.ts
+import { Entity, Html, HtmlDiv, HtmlButton, World } from "@piggo-gg/core"
+
+export const EscapeMenu = (world: World) => {
+  const overlay = HtmlDiv({
+    position: "fixed",
+    top: "0",
+    left: "0",
+    width: "100%",
+    height: "100%",
+    backgroundColor: "rgba(0, 0, 0, 0.8)",
+    display: "none",
+    justifyContent: "center",
+    alignItems: "center",
+    pointerEvents: "auto"
+  })
+
+  const menu = HtmlDiv({
+    display: "flex",
+    flexDirection: "column",
+    gap: "20px",
+    padding: "40px",
+    backgroundColor: "rgba(0, 0, 0, 0.9)",
+    borderRadius: "12px",
+    border: "2px solid white"
+  })
+
+  const resumeButton = HtmlButton({
+    text: "Resume",
+    style: { width: "200px", height: "50px" },
+    onClick: () => {
+      overlay.style.display = "none"
+      world.client?.pointerLock()
+    }
+  })
+
+  const settingsButton = HtmlButton({
+    text: "Settings",
+    style: { width: "200px", height: "50px" },
+    onClick: () => {
+      // Open settings
+    }
+  })
+
+  const quitButton = HtmlButton({
+    text: "Quit to Lobby",
+    style: { width: "200px", height: "50px" },
+    onClick: () => {
+      window.location.href = "/"
+    }
+  })
+
+  menu.appendChild(resumeButton)
+  menu.appendChild(settingsButton)
+  menu.appendChild(quitButton)
+  overlay.appendChild(menu)
+
+  return Entity({
+    id: "escape-menu",
+    persists: true,
+    components: {
+      html: Html({
+        element: overlay,
+        onTick: ({ world, client }) => {
+          if (client.menu) {
+            overlay.style.display = "flex"
+          } else {
+            overlay.style.display = "none"
+          }
+        }
+      })
+    }
+  })
+}
+```
+
+### Chat System
+
+```typescript core/src/html/HtmlChat.ts
+import { Entity, Html, HtmlDiv, HtmlInput } from "@piggo-gg/core"
+
+export const HtmlChat = () => {
+  const container = HtmlDiv({
+    position: "absolute",
+    bottom: "80px",
+    left: "20px",
+    width: "400px",
+    maxHeight: "200px",
+    overflowY: "auto"
+  })
+
+  const messages = HtmlDiv({
+    display: "flex",
+    flexDirection: "column",
+    gap: "5px"
+  })
+
+  const input = document.createElement('input')
+  input.style.cssText = `
+    width: 100%;
+    padding: 10px;
+    background: rgba(0,0,0,0.8);
+    border: 2px solid white;
+    color: white;
+    font-family: Courier New;
+    font-size: 16px;
+    border-radius: 4px;
+  `
+  input.placeholder = "Press Enter to chat..."
+
+  container.appendChild(messages)
+  container.appendChild(input)
+
+  return Entity({
+    id: "chat",
+    persists: true,
+    components: {
+      html: Html({
+        element: container,
+        onTick: ({ world }) => {
+          // Handle chat messages
+          const chatMessages = world.messages.atTick(world.tick)
+          if (chatMessages) {
+            chatMessages.forEach(msg => {
+              const msgDiv = HtmlDiv({
+                padding: "5px",
+                backgroundColor: "rgba(0,0,0,0.6)",
+                borderRadius: "4px"
+              })
+              msgDiv.textContent = `${msg.player}: ${msg.text}`
+              messages.appendChild(msgDiv)
+              
+              // Scroll to bottom
+              container.scrollTop = container.scrollHeight
+            })
+          }
+        }
+      })
+    }
+  })
+}
+```
+
+## Canvas UI (PixiJS)
+
+For UI that needs to be part of the game world:
+
+```typescript
+import { Entity, Renderable, PixiRenderer } from "@piggo-gg/core"
+import { Graphics, Text } from "pixi.js"
+
+export const NameTag = (text: string) => {
+  return Entity({
+    id: `nametag-${text}`,
+    components: {
+      renderable: Renderable({
+        zIndex: 100,
+        setContainer: async (renderer: PixiRenderer) => {
+          const container = new Container()
+          
+          // Background
+          const bg = new Graphics()
+          bg.rect(-50, -15, 100, 30)
+          bg.fill({ color: 0x000000, alpha: 0.7 })
+          
+          // Text
+          const label = new Text({
+            text,
+            style: {
+              fontFamily: 'Arial',
+              fontSize: 16,
+              fill: 0xffffff
+            }
+          })
+          label.anchor.set(0.5, 0.5)
+          
+          container.addChild(bg)
+          container.addChild(label)
+          
+          return container
+        }
+      })
+    }
+  })
+}
+```
+
+## CSS Utilities
+
+```typescript
+import { CSS } from "@piggo-gg/core"
+
+const buttonStyle: CSS = {
+  position: "absolute",
+  width: "200px",
+  height: "50px",
+  backgroundColor: "rgba(0, 0, 0, 0.8)",
+  color: "white",
+  border: "2px solid white",
+  borderRadius: "8px",
+  fontSize: "20px",
+  fontFamily: "Courier New",
+  cursor: "pointer",
+  transition: "all 0.2s"
+}
+
+const button = HtmlButton({
+  text: "Click Me",
+  style: buttonStyle
+})
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use persists flag" icon="floppy-disk">
+    UI entities should have `persists: true` to survive game changes.
+  </Card>
+  <Card title="Pointer events" icon="hand-pointer">
+    Set `pointerEvents: auto` on interactive elements, `none` on decorative ones.
+  </Card>
+  <Card title="Mobile responsive" icon="mobile">
+    Check `world.client?.mobile` and provide touch-friendly controls.
+  </Card>
+  <Card title="Cleanup" icon="broom">
+    Remove DOM elements when entities are destroyed.
+  </Card>
+</CardGroup>
+
+## Performance Tips
+
+<AccordionGroup>
+  <Accordion title="Minimize DOM updates">
+    ```typescript
+    let lastScore = -1
+    
+    onTick: ({ world }) => {
+      const state = world.state<GameState>()
+      
+      // Only update DOM when value changes
+      if (state.score !== lastScore) {
+        scoreElement.textContent = `Score: ${state.score}`
+        lastScore = state.score
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="Use CSS transforms">
+    ```typescript
+    // Better performance than left/top
+    element.style.transform = `translate(${x}px, ${y}px)`
+    ```
+  </Accordion>
+
+  <Accordion title="Batch style changes">
+    ```typescript
+    // Instead of multiple assignments
+    element.style.left = "10px"
+    element.style.top = "20px"
+    element.style.width = "100px"
+    
+    // Use cssText
+    element.style.cssText = "left: 10px; top: 20px; width: 100px;"
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Creating Games" href="/building/creating-games" icon="gamepad">
+    Build complete games with UI
+  </Card>
+  <Card title="Actions" href="/building/actions" icon="bolt">
+    Handle UI interactions
+  </Card>
+  <Card title="Components" href="/building/components" icon="cube">
+    Learn about the Html component
+  </Card>
+</CardGroup>

@@ -1,0 +1,337 @@
+---
+title: ThreeRenderer
+description: Three.js-based 3D renderer for multiplayer games with WebGL, shadow mapping, particle systems, and dynamic lighting
+---
+
+## Overview
+
+The `ThreeRenderer` provides a complete Three.js rendering system optimized for multiplayer browser games. It manages WebGL contexts, scene graphs, asset loading, particle effects, and dynamic lighting pools.
+
+## Initialization
+
+### Basic Setup
+
+```typescript
+import { ThreeRenderer } from "@piggo-gg/core"
+
+const renderer = ThreeRenderer()
+
+// Activate renderer with world context
+await renderer.activate(world)
+```
+
+### Configuration in GameBuilder
+
+```typescript build/Build.ts
+export const Build: GameBuilder<BuildState, BuildSettings> = {
+  id: "build",
+  init: (world) => ({
+    renderer: "three",
+    netcode: "rollback",
+    systems: [
+      ThreeCameraSystem({ height: 0.5, distance: 1 }),
+      ThreeSystem,
+      ParticleSystem,
+      ThreeNametagSystem
+    ],
+    entities: [
+      Sky(),
+      Water(),
+      Sun(),
+      Crosshair()
+    ]
+  })
+}
+```
+
+## Type Definition
+
+<ParamField path="camera" type="ThreeCamera">
+  Three.js camera controller with first/third-person modes
+</ParamField>
+
+<ParamField path="canvas" type="HTMLCanvasElement | undefined">
+  WebGL rendering canvas element
+</ParamField>
+
+<ParamField path="scene" type="Scene">
+  Three.js scene containing all 3D objects
+</ParamField>
+
+<ParamField path="ready" type="boolean">
+  Whether renderer is initialized and ready to render
+</ParamField>
+
+<ParamField path="fLoader" type="FBXLoader">
+  Asset loader for FBX models
+</ParamField>
+
+<ParamField path="gLoader" type="GLTFLoader">
+  Asset loader for GLTF/GLB models
+</ParamField>
+
+<ParamField path="tLoader" type="TextureLoader">
+  Asset loader for texture images
+</ParamField>
+
+<ParamField path="particles" type="Particle[]">
+  Active particle instances in the scene
+</ParamField>
+
+<ParamField path="lightPool" type="LightPoolEntry[]">
+  Reusable point light instances for dynamic lighting
+</ParamField>
+
+## Methods
+
+### activate
+
+Initializes the WebGL renderer, creates the canvas, sets up event listeners, and starts the render loop.
+
+```typescript
+await renderer.activate(world)
+```
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+**Returns:** `Promise<void>`
+
+**Configuration:**
+- Creates WebGL renderer with antialiasing and high performance mode
+- Enables shadow mapping (type 1)
+- Sets pixel ratio to `window.devicePixelRatio`
+- Registers resize and orientation change handlers
+- Adds light pool to scene
+- Starts animation loop calling `world.onRender()`
+
+### deactivate
+
+Cleans up renderer resources and stops the render loop.
+
+```typescript
+renderer.deactivate()
+```
+
+**Actions:**
+- Clears the scene
+- Stops animation loop
+- Disposes WebGL context
+- Sets `ready` to `false`
+
+### resize
+
+Updates renderer and camera dimensions when window resizes.
+
+```typescript
+renderer.resize()
+```
+
+**Behavior:**
+- Gets current screen dimensions
+- Updates WebGL renderer size
+- Recalculates camera aspect ratio
+- Updates camera projection matrix
+
+### spawnParticles
+
+Creates a burst of particle effects at a world position.
+
+```typescript
+world.three?.spawnParticles(
+  { x: 10, y: 5, z: 1 },
+  world,
+  "blast"
+)
+```
+
+<ParamField path="pos" type="XYZ" required>
+  World position for particle spawn
+</ParamField>
+
+<ParamField path="world" type="World" required>
+  Game world instance
+</ParamField>
+
+<ParamField path="type" type="ParticleType" default="blast">
+  Particle effect type: `"water"`, `"blast"`, or `"blood"`
+</ParamField>
+
+**Particle Types:**
+
+| Type | Color | Duration | Gravity | Velocity |
+|------|-------|----------|---------|----------|
+| `water` | Blue-green | 9 ticks | 0.0024 | 0.03 |
+| `blast` | Red-yellow | 6 ticks | 0 | 0.03 |
+| `blood` | Red | 9 ticks | 0.0028 | 0.015 |
+
+**Example from game:**
+
+```typescript strike/Sarge.ts
+// Spawn blood particles when character is hit
+if (health.data.damaged === world.tick) {
+  world.three?.spawnParticles(
+    position.data,
+    world,
+    "blood"
+  )
+}
+```
+
+## Particle System
+
+The `ParticleSystem` handles particle lifecycle and physics.
+
+```typescript
+import { ParticleSystem } from "@piggo-gg/core"
+
+// Add to game systems
+systems: [
+  ParticleSystem
+]
+```
+
+**Features:**
+- Creates particle prototype mesh on init
+- Updates particle positions every render frame with velocity interpolation
+- Applies gravity on tick
+- Removes expired particles automatically
+- Spawns 20 particles per burst with randomized velocities
+
+## Light Pool
+
+Dynamic point lights for effects like muzzle flashes and explosions.
+
+```typescript
+// Light pool automatically initialized with 4 lights
+lightPool: [
+  { used: false, light: new PointLight(0xffffff, 0, 2) },
+  { used: false, light: new PointLight(0xffffff, 0, 2) },
+  { used: false, light: new PointLight(0xffffff, 0, 2) },
+  { used: false, light: new PointLight(0xffffff, 0, 2) }
+]
+
+// Get an available light
+const entry = world.three?.lightPool.find(e => !e.used)
+if (entry) {
+  entry.used = true
+  entry.light.intensity = 10
+  entry.light.position.set(x, z, y)
+  // Release after effect completes
+  setTimeout(() => {
+    entry.used = false
+    entry.light.intensity = 0
+  }, 100)
+}
+```
+
+## Asset Loading
+
+Three loaders for different model and texture formats.
+
+### Loading GLTF Models
+
+```typescript
+const gltf = await world.three?.gLoader.loadAsync("character.glb")
+if (gltf) {
+  const model = gltf.scene
+  model.traverse((child) => {
+    if (child instanceof Mesh) {
+      child.castShadow = true
+      child.receiveShadow = true
+    }
+  })
+  o.push(model)
+}
+```
+
+### Loading FBX Models
+
+```typescript
+const fbx = await world.three?.fLoader.loadAsync("building.fbx")
+if (fbx) {
+  fbx.scale.set(0.01, 0.01, 0.01)
+  o.push(fbx)
+}
+```
+
+### Loading Textures
+
+```typescript
+const texture = await world.three?.tLoader.loadAsync("stone.png")
+texture.wrapS = RepeatWrapping
+texture.wrapT = RepeatWrapping
+material.map = texture
+```
+
+## Integration with World
+
+Access the renderer through the world instance:
+
+```typescript
+if (world.three?.ready) {
+  // Renderer is active
+  world.three.scene.add(mesh)
+  world.three.spawnParticles(pos, world, "blast")
+}
+```
+
+## Performance Optimizations
+
+- **High-performance mode:** WebGL context uses `powerPreference: "high-performance"`
+- **Precision:** Uses `highp` shader precision
+- **Shadow mapping:** Efficient type 1 shadow maps
+- **Particle pooling:** Reuses particle meshes
+- **Light pooling:** Limits dynamic lights to 4 concurrent instances
+- **Frustum culling:** Automatically handled by Three.js
+
+## Common Patterns
+
+### Creating 3D Entities
+
+```typescript
+import { Entity, Position, Three } from "@piggo-gg/core"
+import { Mesh, BoxGeometry, MeshPhongMaterial } from "three"
+
+export const Crate = () => Entity<Position | Three>({
+  id: "crate",
+  components: {
+    position: Position({ x: 0, y: 0, z: 1 }),
+    three: Three({
+      init: async ({ o }) => {
+        const geometry = new BoxGeometry(1, 1, 1)
+        const material = new MeshPhongMaterial({ color: 0x8B4513 })
+        const mesh = new Mesh(geometry, material)
+        mesh.castShadow = true
+        mesh.receiveShadow = true
+        o.push(mesh)
+      },
+      onTick: ({ entity }) => {
+        const pos = entity.components.position.data
+        // Update mesh position in ThreeSystem
+      }
+    })
+  }
+})
+```
+
+### Animating Objects
+
+```typescript
+three: Three({
+  onRender: ({ entity, delta, three }) => {
+    const pos = entity.components.position.interpolate(world, delta)
+    if (three.o[0]) {
+      three.o[0].position.set(pos.x, pos.z, pos.y)
+      three.o[0].rotation.y += delta / 25 * 0.05
+    }
+  }
+})
+```
+
+## See Also
+
+- [ThreeCamera](/api/graphics/cameras#threecamera) - Camera controls for 3D games
+- [Shaders](/api/graphics/shaders) - Custom shader materials
+- [ThreeSystem](/api/systems/rendering#threesystem) - Rendering system

@@ -1,0 +1,483 @@
+---
+title: Actions
+description: Handle player input and game events with the action system
+---
+
+## Overview
+
+Actions are deterministic operations that modify game state. They're the primary way to handle:
+- Player input (keyboard, mouse, touch)
+- Scheduled events
+- Network messages
+- AI decisions
+
+Actions are queued in a tick buffer and executed in a deterministic order to ensure network synchronization.
+
+## Action Structure
+
+An action is a function with typed parameters:
+
+```typescript
+import { Action } from "@piggo-gg/core"
+
+const MyAction = Action<ParamsType>("actionId", (context) => {
+  const { params, entity, world, player, character } = context
+  
+  // Action logic here
+})
+```
+
+**Context properties:**
+- `params` - Typed parameters passed to the action
+- `entity` - Entity the action is invoked on
+- `world` - The game world
+- `player` - Player who triggered the action
+- `character` - Character controlled by the player
+- `offline` - Whether action is running offline
+
+## Creating Actions
+
+<Steps>
+  <Step title="Basic action">
+    ```typescript
+    import { Action } from "@piggo-gg/core"
+
+    const Jump = Action("jump", ({ entity, world }) => {
+      if (!entity) return
+      
+      const { position } = entity.components
+      if (!position?.data.standing) return
+      
+      position.setVelocity({ z: 5 })
+      world.client?.sound.play({ name: "jump" })
+    })
+    ```
+  </Step>
+
+  <Step title="Action with parameters">
+    ```typescript
+    import { Action, XY } from "@piggo-gg/core"
+
+    const Move = Action<XY>("move", ({ params, entity }) => {
+      if (!entity) return
+      
+      const { position } = entity.components
+      if (!position) return
+      
+      if (params.x > 0) position.data.facing = 1
+      if (params.x < 0) position.data.facing = -1
+      
+      position.setVelocity({
+        x: params.x,
+        y: params.y
+      })
+    })
+    ```
+  </Step>
+
+  <Step title="Complex action with state">
+    ```typescript
+    type ShootParams = {
+      pos: XYZ
+      aim: XY
+      damage: number
+    }
+
+    const Shoot = Action<ShootParams>("shoot", ({ params, entity, world, character }) => {
+      if (!entity) return
+      
+      // Play sound
+      world.client?.sound.play({ name: "gunshot" })
+      
+      // Apply recoil
+      if (character) {
+        character.components.position.data.recoil = 0.5
+      }
+      
+      // Raycast for hit detection
+      const hit = raycast(params.pos, params.aim, world)
+      if (hit) {
+        hit.entity.components.health?.damage(params.damage, world)
+        
+        // Show hit marker
+        if (character?.id === world.client?.character()?.id) {
+          world.client.controls.localHit = {
+            tick: world.tick,
+            headshot: false
+          }
+        }
+      }
+    })
+    ```
+  </Step>
+</Steps>
+
+## Action Patterns
+
+### Movement Actions
+
+```typescript core/src/ecs/actions/movement/Move.ts
+import { Action, XY } from "@piggo-gg/core"
+
+export const Move = Action<XY>("move", ({ params, entity }) => {
+  if (!entity) return
+
+  const { position } = entity.components
+  if (!position) return
+
+  if (params.x > 0) position.data.facing = 1
+  if (params.x < 0) position.data.facing = -1
+
+  position.setHeading({ x: NaN, y: NaN })
+  position.setVelocity({
+    ...((params.x !== undefined) ? { x: params.x } : {}),
+    ...((params.y !== undefined) ? { y: params.y } : {})
+  })
+})
+```
+
+### Attack Actions
+
+```typescript core/src/ecs/actions/attacks/Dagger.ts
+import { Action, XY } from "@piggo-gg/core"
+
+type AttackParams = {
+  facing: -1 | 1
+  pos: XYZ
+}
+
+export const DaggerAttack = Action<AttackParams>("dagger", ({ params, world }) => {
+  const { pos, facing } = params
+  
+  // Create hitbox
+  const hitbox = Entity({
+    id: `dagger-hitbox-${world.tick}`,
+    components: {
+      position: Position({
+        x: pos.x + facing * 0.3,
+        y: pos.y,
+        z: pos.z
+      }),
+      collider: Collider({
+        shape: "box",
+        width: 0.4,
+        height: 0.4,
+        sensor: (target, world) => {
+          target.components.health?.damage(15, world)
+          return true
+        }
+      }),
+      expires: Expires(2) // Remove after 2 ticks
+    }
+  })
+  
+  world.addEntity(hitbox)
+  world.client?.sound.play({ name: "slash" })
+})
+```
+
+### Interactive Actions
+
+```typescript core/src/ecs/actions/interactive/Eat.ts
+import { Action } from "@piggo-gg/core"
+
+export const Eat = Action("eat", ({ entity, world }) => {
+  if (!entity) return
+  
+  const { food, health } = entity.components
+  if (!food || !health) return
+  
+  // Heal the eater
+  health.data.hp = Math.min(health.data.maxHp, health.data.hp + food.data.heal)
+  
+  // Remove food entity
+  world.removeEntity(entity.id)
+  
+  world.client?.sound.play({ name: "eat" })
+})
+```
+
+### Building Actions
+
+```typescript core/src/ecs/actions/interactive/Place.ts
+import { Action, XYZ } from "@piggo-gg/core"
+
+type PlaceParams = {
+  dir: XYZ
+  camera: XYZ
+  pos: XYZ
+  type: number
+  blockColor?: string
+}
+
+export const Place = Action<PlaceParams>("place", ({ params, world }) => {
+  const { dir, camera, type, blockColor } = params
+  
+  // Find placement location
+  const hit = blockInLine({ from: camera, dir, world })
+  if (!hit?.outside) return
+  
+  // Add block
+  world.blocks.add({ ...hit.outside, type })
+  
+  // Set color if specified
+  if (blockColor) {
+    const key = `${hit.outside.x},${hit.outside.y},${hit.outside.z}`
+    world.blocks.coloring[key] = blockColor
+  }
+  
+  world.blocks.invalidate()
+  world.client?.sound.play({ name: "place" })
+})
+```
+
+## Input Mapping
+
+Map keyboard/mouse/gamepad input to actions using the Input component:
+
+```typescript core/src/games/build/Bob.ts
+import { Input } from "@piggo-gg/core"
+
+const input = Input({
+  press: {
+    // Keyboard
+    "w": ({ world }) => ({
+      actionId: "move",
+      params: { x: 0, y: -1 }
+    }),
+    
+    // Mouse
+    "mb1": ({ world, aim, client }) => {
+      if (!document.pointerLockElement && !client.mobile) return
+      return {
+        actionId: "shoot",
+        params: { aim }
+      }
+    },
+    
+    // Key combinations
+    "w,a": ({ world }) => ({
+      actionId: "move",
+      params: { x: -0.7, y: -0.7 }
+    }),
+    
+    // Hold detection
+    " ": ({ hold }) => {
+      if (hold) return // Ignore held spacebar
+      return { actionId: "jump" }
+    },
+    
+    // Advanced hold
+    "g": ({ hold }) => {
+      if (hold === 5) { // Held for 5 ticks
+        world.debug = !world.debug
+      }
+    }
+  },
+  
+  release: {
+    "escape": ({ world, client }) => {
+      world.client?.pointerLock()
+    }
+  },
+  
+  joystick: ({ client }) => {
+    const { power, angle } = client.controls.left
+    return {
+      actionId: "moveAnalog",
+      params: { power, angle }
+    }
+  }
+})
+```
+
+**Input callback context:**
+- `world` - Game world
+- `client` - Client instance
+- `character` - Controlled character
+- `player` - Player entity
+- `aim` - Current aim direction (XY)
+- `target` - DOM element clicked
+- `hold` - Number of ticks key has been held
+
+## Action Queue
+
+Actions are queued and executed deterministically:
+
+```typescript
+// Queue action for next tick
+world.actions.push(world.tick + 1, entity.id, {
+  actionId: "shoot",
+  params: { damage: 25 },
+  playerId: player.id,
+  characterId: character.id
+})
+
+// Queue action with delay
+world.actions.push(world.tick + 60, entity.id, {
+  actionId: "explode"
+})
+
+// Queue multiple actions
+for (let i = 0; i < 5; i++) {
+  world.actions.push(world.tick + i * 10, entity.id, {
+    actionId: "pulse",
+    params: { intensity: i }
+  })
+}
+```
+
+## Input Maps
+
+Reusable input configurations:
+
+```typescript core/src/ecs/actions/movement/WASDInputMap.ts
+import { InputMap } from "@piggo-gg/core"
+
+export const WASDInputMap: InputMap = {
+  press: {
+    "w,a": ({ world }) => ({ actionId: "move", params: { x: -1, y: -1 } }),
+    "w,d": ({ world }) => ({ actionId: "move", params: { x: 1, y: -1 } }),
+    "a,s": ({ world }) => ({ actionId: "move", params: { x: -1, y: 1 } }),
+    "d,s": ({ world }) => ({ actionId: "move", params: { x: 1, y: 1 } }),
+    "w": ({ world }) => ({ actionId: "move", params: { x: 0, y: -1 } }),
+    "a": ({ world }) => ({ actionId: "move", params: { x: -1, y: 0 } }),
+    "s": ({ world }) => ({ actionId: "move", params: { x: 0, y: 1 } }),
+    "d": ({ world }) => ({ actionId: "move", params: { x: 1, y: 0 } })
+  }
+}
+
+// Use in entity
+const input = Input({
+  press: {
+    ...WASDInputMap.press,
+    " ": () => ({ actionId: "jump" })
+  }
+})
+```
+
+## Player Actions
+
+Actions that operate on player entities:
+
+```typescript core/src/ecs/actions/PlayerActions.ts
+export const SwitchTeam = Action("SwitchTeam", ({ entity, world }) => {
+  if (!entity?.components.team) return
+  
+  const currentTeam = entity.components.team.data.team
+  entity.components.team.data.team = currentTeam === 1 ? 2 : 1
+  
+  // Respawn character on new team
+  const character = entity.components.controlling?.getCharacter(world)
+  if (character) {
+    world.removeEntity(character.id)
+  }
+})
+
+export const Ready = Action("ready", ({ entity }) => {
+  if (!entity?.components.pc) return
+  entity.components.pc.data.ready = true
+})
+```
+
+## Command Actions
+
+Global actions that don't target a specific entity:
+
+```typescript
+// Register command
+world.commands["startRound"] = {
+  invoke: ({ world, params }) => {
+    const state = world.state<GameState>()
+    state.round++
+    state.phase = "playing"
+  }
+}
+
+// Invoke command
+world.actions.push(world.tick + 1, "world", {
+  actionId: "startRound",
+  playerId: player.id
+})
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Deterministic" icon="lock">
+    Actions must produce the same result given the same input. Avoid random numbers without seeding.
+  </Card>
+  <Card title="Validate input" icon="shield-check">
+    Check that entity and components exist before using them.
+  </Card>
+  <Card title="Use params" icon="sliders">
+    Pass data through params rather than capturing variables from closure.
+  </Card>
+  <Card title="Queue properly" icon="clock">
+    Always queue actions for tick + 1 or later, never for the current tick.
+  </Card>
+</CardGroup>
+
+## Performance Tips
+
+<AccordionGroup>
+  <Accordion title="Batch actions">
+    ```typescript
+    // Instead of many small actions
+    for (let i = 0; i < 100; i++) {
+      world.actions.push(world.tick + 1, entity.id, {
+        actionId: "damage",
+        params: { amount: 1 }
+      })
+    }
+    
+    // Use one action with batch params
+    world.actions.push(world.tick + 1, entity.id, {
+      actionId: "damage",
+      params: { amount: 100 }
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Throttle expensive actions">
+    ```typescript
+    let lastFired = -100
+    
+    const input = Input({
+      press: {
+        "mb1": ({ world }) => {
+          if (world.tick - lastFired < 6) return // 150ms cooldown
+          lastFired = world.tick
+          return { actionId: "shoot" }
+        }
+      }
+    })
+    ```
+  </Accordion>
+
+  <Accordion title="Early exit checks">
+    ```typescript
+    const MyAction = Action("myAction", ({ entity, world }) => {
+      if (!entity) return
+      if (entity.removed) return
+      if (!entity.components.health?.alive()) return
+      
+      // Expensive logic only runs if all checks pass
+    })
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Components" href="/building/components" icon="cube">
+    Learn about component data structures
+  </Card>
+  <Card title="Systems" href="/building/systems" icon="gears">
+    Process actions with systems
+  </Card>
+  <Card title="UI" href="/building/ui" icon="window">
+    Create interactive UI elements
+  </Card>
+</CardGroup>

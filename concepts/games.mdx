@@ -1,0 +1,557 @@
+---
+title: Building Games
+description: How to create and configure games in Piggo
+---
+
+## What is a Game?
+
+A **Game** in Piggo is a self-contained configuration that defines:
+- Initial entities (map, UI, objects)
+- Systems (gameplay logic, rendering, physics)
+- Network strategy (rollback or delay)
+- Renderer type (Pixi or Three.js)
+- Game state and settings
+
+```typescript
+// From: core/src/runtime/Game.ts:6
+export type Game<State extends NetworkedComponentData = {}, Settings extends {} = {}> = {
+  id: GameTitle
+  entities: Entity[]          // Starting entities
+  netcode: "rollback" | "delay"
+  renderer: "three" | "pixi"
+  settings: Settings          // Client-only config
+  state: State                // Networked game state
+  systems: SystemBuilder[]    // Game logic
+}
+```
+
+## GameBuilder Pattern
+
+Games are defined using the `GameBuilder` pattern:
+
+```typescript
+// From: core/src/runtime/Game.ts:16
+export type GameBuilder<State = {}, Settings = {}> = {
+  id: GameTitle
+  init: (world: World) => Game<State, Settings>
+}
+```
+
+This allows games to initialize dynamically based on the world state.
+
+## Complete Example: Volley
+
+Let's examine a real game from the codebase:
+
+```typescript
+// From: core/src/games/volley/Volley.ts:33
+export type VolleyState = {
+  hit: 0 | 1 | 2 | 3 | 4
+  jumpHits: string[]
+  lastHit: string
+  lastHitTeam: 0 | 1 | 2
+  lastHitTick: number
+  lastWin: 0 | 1 | 2
+  lastWinTick: number
+  phase: "serve" | "play" | "point" | "game"
+  scoreLeft: number
+  scoreRight: number
+  teamServing: 1 | 2
+}
+
+export type VolleySettings = {
+  showControls: boolean
+}
+
+export const Volley: GameBuilder<VolleyState, VolleySettings> = {
+  id: "volley",
+  init: (world) => ({
+    id: "volley",
+    netcode: "rollback",
+    renderer: "pixi",
+    settings: {
+      showControls: true
+    },
+    state: {
+      hit: 0,
+      jumpHits: [],
+      lastHit: "",
+      lastHitTeam: 0,
+      lastHitTick: 0,
+      lastWin: 0,
+      lastWinTick: 0,
+      phase: "point",
+      scoreLeft: 0,
+      scoreRight: 0,
+      teamServing: 1
+    },
+    systems: [
+      PhysicsSystem("local"),
+      PhysicsSystem("global"),
+      SpawnSystem({ spawner: Vince, pos: { x: 8, y: 8, z: 2 } }),
+      VolleySystem,
+      ShadowSystem,
+      PixiRenderSystem,
+      PixiNametagSystem(),
+      HUDSystem(controls),
+      PixiCameraSystem({
+        follow: () => ({ x: 225, y: 0, z: 0 }),
+        resize: () => {
+          const { w } = screenWH()
+          return Math.min(3.4, w / (550 * 1.1))
+        }
+      }),
+      PixiDebugSystem
+    ],
+    entities: [
+      Background({ rays: true }),
+      Cursor(),
+      Ball(),
+      Court(),
+      Centerline(),
+      PostTop(),
+      PostBottom(),
+      Net(),
+      Bounds("2"),
+      Bounds("3"),
+      Target(),
+      ScorePanel(),
+      HtmlChat(),
+      EscapeMenu(world),
+      HtmlLagText(),
+      HtmlFpsText()
+    ]
+  })
+}
+```
+
+## Game Configuration
+
+### Choosing a Renderer
+
+<CodeGroup>
+```typescript Pixi (2D)
+renderer: "pixi"
+// Use for:
+// - Top-down games
+// - Side-scrollers
+// - Sprite-based graphics
+// - Better mobile performance
+```
+
+```typescript Three.js (3D)
+renderer: "three"
+// Use for:
+// - First-person games
+// - 3D environments
+// - Advanced lighting/shadows
+// - Desktop-focused
+```
+</CodeGroup>
+
+### Choosing Netcode
+
+<CodeGroup>
+```typescript Rollback
+netcode: "rollback"
+// Use for:
+// - Fast-paced games (shooters, fighting)
+// - Low-latency feel
+// - Deterministic simulation
+// - Client prediction
+```
+
+```typescript Delay
+netcode: "delay"
+// Use for:
+// - Turn-based games
+// - Slower-paced games
+// - Simpler to implement
+// - Lower CPU usage
+```
+</CodeGroup>
+
+<Tip>
+See the [Netcode](/concepts/netcode) page for detailed comparison.
+</Tip>
+
+### State vs Settings
+
+<CardGroup cols={2}>
+  <Card title="State" icon="database">
+    **Networked** across all clients
+    
+    ```typescript
+    state: {
+      scoreLeft: 0,
+      scoreRight: 0,
+      phase: "serve"
+    }
+    ```
+    
+    Use for:
+    - Scores, timers
+    - Game phase
+    - Shared game data
+  </Card>
+  
+  <Card title="Settings" icon="sliders">
+    **Client-only** configuration
+    
+    ```typescript
+    settings: {
+      showControls: true,
+      mouseSensitivity: 1.0
+    }
+    ```
+    
+    Use for:
+    - UI preferences
+    - Graphics settings
+    - Control schemes
+  </Card>
+</CardGroup>
+
+## Creating Entities
+
+Define entity factory functions in your game folder:
+
+```typescript
+// core/src/games/volley/entities.ts
+export const Ball = (): Entity<Position | Collider | Renderable> => Entity({
+  id: "ball",
+  components: {
+    position: Position({ x: 225, y: 0, z: 50, gravity: 0.015 }),
+    collider: Collider({
+      shape: "ball",
+      radius: 4,
+      restitution: 0.8
+    }),
+    renderable: Renderable({
+      zIndex: 2,
+      setContainer: async () => {
+        const sprite = await loadSprite("ball.png")
+        return sprite
+      }
+    }),
+    networked: Networked()
+  }
+})
+
+export const Court = (): Entity<Position | Renderable> => Entity({
+  id: "court",
+  components: {
+    position: Position({ x: 225, y: 0 }),
+    renderable: Renderable({
+      zIndex: 0,
+      setContainer: async () => {
+        const sprite = await loadSprite("court.png")
+        return sprite
+      }
+    })
+  }
+})
+```
+
+<Note>
+Static entities (like Court) don't need `networked` component since their state never changes.
+</Note>
+
+## Creating Game Systems
+
+Implement game-specific logic in a system:
+
+```typescript
+// From: core/src/games/volley/Volley.ts:96
+const VolleySystem = SystemBuilder({
+  id: "VolleySystem",
+  init: (world) => {
+    const bots: Record<string, Entity<Position | Team>> = {}
+    const mobileUI = MobileUI(world)
+    
+    // Initialize bots...
+    
+    return {
+      id: "VolleySystem",
+      query: [],
+      priority: 9,
+      onTick: () => {
+        const state = world.state<VolleyState>()
+        const ballPos = world.entity<Position>("ball")?.components.position
+        if (!ballPos) return
+        
+        // Game phase: point scored
+        if (state.phase === "point") {
+          // Wait for ball to land
+          if (ballPos.data.z > 0) return
+          
+          state.lastWinTick = world.tick
+          
+          // Update score
+          if (state.lastWin === 1) state.scoreLeft++
+          if (state.lastWin === 2) state.scoreRight++
+          state.teamServing = state.lastWin === 2 ? 2 : 1
+          
+          // Check win condition
+          if (state.scoreLeft >= 7 || state.scoreRight >= 7) {
+            state.scoreLeft = 0
+            state.scoreRight = 0
+          }
+          
+          // Transition to serve
+          state.phase = "serve"
+          state.lastHit = ""
+          state.lastHitTeam = 0
+          state.hit = 0
+          
+          // Reset ball
+          ballPos.setVelocity({ x: 0, y: 0, z: 0 })
+          ballPos.setRotation(0)
+          ballPos.setGravity(0)
+          ballPos.setPosition({
+            x: state.teamServing === 1 ? 10 : 400,
+            y: 1,
+            z: 50
+          })
+        }
+        
+        // Game phase: serving or playing
+        if (state.phase === "play" || state.phase === "serve") {
+          // Check if ball hit ground
+          if (ballPos.data.z === 0) {
+            state.phase = "point"
+            state.lastWin = (ballPos.data.x < 225) ? 2 : 1
+            state.lastWinTick = world.tick
+          }
+        }
+      }
+    }
+  }
+})
+```
+
+<Warning>
+Game logic systems should run at priority 5-9, **before** physics (7) and **after** input (1).
+</Warning>
+
+## Registering Your Game
+
+Add your game to the world's game registry:
+
+```typescript
+// From: core/src/runtime/World.ts:84
+games: {
+  "build": Build,
+  "craft": Craft,
+  "lobby": Lobby,
+  "island": Island,
+  "strike": Strike,
+  "volley": Volley,  // <-- Your game here
+  "mars": Mars,
+  "hoops": Hoops,
+  "legends": Legends,
+  "jam": Jam
+}
+```
+
+Then load it:
+
+```typescript
+world.setGame("volley")
+```
+
+## UI and HUD
+
+Use HTML components for UI overlays:
+
+```typescript
+import { HtmlDiv, HtmlText, HtmlButton } from "@piggo-gg/core"
+
+const ScorePanel = (): Entity => Entity({
+  id: "score-panel",
+  components: {
+    position: Position({ x: 400, y: 50, screenFixed: true }),
+    html: HtmlDiv({
+      children: [
+        HtmlText({
+          text: (world) => {
+            const state = world.state<VolleyState>()
+            return `${state.scoreLeft} - ${state.scoreRight}`
+          },
+          style: {
+            fontSize: "48px",
+            color: "white",
+            fontWeight: "bold"
+          }
+        })
+      ],
+      style: {
+        textAlign: "center"
+      }
+    })
+  }
+})
+```
+
+<Tip>
+HTML components with `screenFixed: true` position will stay in place on screen regardless of camera movement.
+</Tip>
+
+## Spawning Players
+
+Use `SpawnSystem` to spawn player characters:
+
+```typescript
+import { SpawnSystem } from "@piggo-gg/core"
+
+systems: [
+  SpawnSystem({
+    spawner: Vince,  // Entity factory function
+    pos: { x: 100, y: 100, z: 0 },
+    offset: { x: 50, y: 0 }  // Space players apart
+  })
+]
+```
+
+The `SpawnSystem` automatically:
+- Spawns an entity for each player
+- Connects it to the player's `controlling` component
+- Positions based on `pos` + `offset * playerIndex`
+
+## Camera Control
+
+<CodeGroup>
+```typescript Pixi Camera
+PixiCameraSystem({
+  follow: () => ({ x: 225, y: 0, z: 0 }),  // Fixed center
+  resize: () => {
+    const { w } = screenWH()
+    return Math.min(3.4, w / (550 * 1.1))  // Dynamic zoom
+  }
+})
+```
+
+```typescript Three.js Camera
+ThreeCameraSystem({
+  follow: (world) => {
+    const character = world.client?.character()
+    return character?.components.position.xyz() ?? { x: 0, y: 0, z: 0 }
+  },
+  mode: "third"  // or "first"
+})
+```
+</CodeGroup>
+
+## Game Lifecycle Hooks
+
+You can hook into game lifecycle events:
+
+```typescript
+const MyGame: GameBuilder = {
+  id: "mygame",
+  init: (world) => {
+    // Called when game loads
+    console.log("Game initialized!")
+    
+    // Access world to set up subscriptions, etc.
+    const cleanup = someSubscription()
+    
+    return {
+      id: "mygame",
+      // ...
+      systems: [
+        SystemBuilder({
+          id: "CleanupSystem",
+          init: (world) => ({
+            id: "CleanupSystem",
+            query: [],
+            priority: 999,
+            onTick: (entities, isRollback) => {
+              // Called every tick
+            }
+          })
+        })
+      ]
+    }
+  }
+}
+```
+
+<Note>
+When `world.setGame()` is called with a different game, all non-persistent entities and systems are removed automatically.
+</Note>
+
+## Testing Your Game
+
+<Steps>
+  <Step title="Run dev server">
+    ```bash
+    cd web
+    bun dev
+    ```
+  </Step>
+  
+  <Step title="Load game with URL param">
+    ```
+    http://localhost:5173?game=mygame
+    ```
+  </Step>
+  
+  <Step title="Enable debug mode">
+    Press `/` then type `debug` to see entity bounds, velocities, etc.
+  </Step>
+  
+  <Step title="Test multiplayer">
+    Open two tabs, create lobby, join from second tab
+  </Step>
+</Steps>
+
+## Best Practices
+
+<AccordionGroup>
+  <Accordion title="Keep state minimal">
+    Only put data in `state` that must be synchronized:
+    
+    ❌ `state.playerColors = { ... }` (use entity components)
+    
+    ✅ `state.roundNumber = 3` (shared game phase)
+  </Accordion>
+  
+  <Accordion title="Use entity factories">
+    Create reusable factory functions:
+    ```typescript
+    export const Enemy = (x: number, y: number) => Entity({
+      id: `enemy-${randomHash()}`,
+      components: { /* ... */ }
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="Separate rendering from logic">
+    Game logic systems: priority 5-9
+    
+    Rendering systems: priority 11+
+  </Accordion>
+  
+  <Accordion title="Handle missing entities">
+    Always check if entities exist:
+    ```typescript
+    const ball = world.entity("ball")
+    if (!ball) return  // Entity might not exist yet
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Rendering" icon="palette" href="/concepts/rendering">
+    Add graphics to your game
+  </Card>
+  <Card title="Physics" icon="atom" href="/concepts/physics">
+    Add collision and movement
+  </Card>
+  <Card title="Netcode" icon="network-wired" href="/concepts/netcode">
+    Make it multiplayer
+  </Card>
+</CardGroup>

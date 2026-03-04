@@ -1,0 +1,575 @@
+---
+title: 'Craft'
+description: 'Survival game with procedural terrain, building, and eagle vs duck gameplay'
+---
+
+Craft is a survival game featuring procedurally generated voxel terrain, tree spawning, building mechanics, and a unique "eagle vs duck" game mode where one player hunts others.
+
+## Gameplay
+
+- **Mode**: Eagle vs Duck survival
+- **Terrain**: Procedurally generated grass, trees, and hills
+- **Building**: Place and break voxel blocks
+- **Objective**: Ducks survive while eagle hunts them
+- **Flying**: Eagles can fly; ducks cannot
+- **Rounds**: Multi-round with rotating eagle player
+- **Points**: Eagle earns 3 points per duck caught
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/craft/Craft.ts:31`
+
+```typescript
+export const Craft: GameBuilder<CraftState, CraftSettings> = {
+  id: "craft",
+  init: (world) => ({
+    id: "craft",
+    netcode: "rollback",
+    renderer: "three",
+    settings: {
+      ambientSound: true,
+      showControls: true,
+      showCrosshair: true,
+      showNametags: true,
+      mouseSensitivity: 1
+    },
+    state: {
+      doubleJumped: [],
+      nextSeed: 123456111,
+      phase: "warmup",
+      round: 0,
+      startedEagle: [],
+      willStart: null
+    },
+    systems: [
+      SpawnSystem({ spawner: Carl, pos: { x: 8, y: 8, z: 2 } }),
+      BlockPhysicsSystem("global"),
+      BlockPhysicsSystem("local"),
+      ThreeCameraSystem({ height: 0.3, distance: 0.8 }),
+      CraftSystem,
+      ThreeNametagSystem,
+      ThreeSystem,
+      InventorySystem,
+      BlockMeshSystem({ 
+        counts: { 
+          grass: 20000, 
+          leaf: 1000, 
+          oak: 1000, 
+          spruce: 1000, 
+          marble: 0 
+        } 
+      })
+    ],
+    entities: [
+      Crosshair(),
+      EscapeMenu(world),
+      CraftScoreboard(),
+      HtmlChat(),
+      Sun(),
+      Sky()
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type CraftState = {
+  doubleJumped: string[]       // Characters who used double jump
+  nextSeed: number             // RNG seed for next round
+  phase: "warmup" | "starting" | "play"
+  round: number                // Current round number
+  startedEagle: string[]       // Players who've been eagle
+  willStart: null | number     // Tick when round starts
+}
+```
+
+### Settings
+
+```typescript
+export type CraftSettings = {
+  ambientSound: boolean
+  showControls: boolean
+  showCrosshair: boolean
+  showNametags: boolean
+  mouseSensitivity: number
+}
+```
+
+## Systems
+
+### CraftSystem
+
+Location: `core/src/games/craft/Craft.ts:79`
+
+```typescript
+const CraftSystem = SystemBuilder({
+  id: "CraftSystem",
+  init: (world) => {
+    // Generate initial terrain
+    spawnTerrain(world, 24)
+
+    const mobileUI = MobileUI(world)
+    const preview = BlockPreview(world)
+    if (preview) world.three?.scene.add(preview.mesh)
+
+    return {
+      id: "CraftSystem",
+      query: [],
+      priority: 3,
+      onTick: () => {
+        const state = world.state<CraftState>()
+        const settings = world.settings<CraftSettings>()
+        const players = world.players()
+        const characters = world.characters()
+
+        // Pointer lock control
+        if (world.client && !world.client.mobile) {
+          world.client.menu = document.pointerLockElement === null
+        }
+
+        mobileUI?.update()
+
+        // Block preview for placement
+        const pc = world.client?.character()
+        if (pc && preview) {
+          preview.update(world.three!.camera.pos(), world.three!.camera.dir(world))
+        }
+
+        // Start game when all players ready
+        if (world.mode === "server" && state.phase === "warmup" && players.length > 1) {
+          const notReady = players.filter(p => !p.components.pc.data.ready)
+          if (notReady.length === 0) {
+            state.phase = "starting"
+            state.willStart = world.tick + 40 * 3
+            state.nextSeed = randomInt(1000000)
+          }
+        }
+
+        // Check win condition (all ducks caught)
+        if (world.mode === "server" && state.phase === "play") {
+          const ducks = characters.filter(c => !c.components.position.data.flying)
+
+          if (ducks.length === 0) {
+            if (characters.length === state.startedEagle.length) {
+              // Everyone has been eagle - declare winner
+              const winner = players[0].components.pc.data.name
+              world.announce(`${winner} wins! GG!`)
+
+              state.phase = "warmup"
+              state.startedEagle = []
+              state.round = 0
+
+              players.forEach(p => {
+                p.components.pc.data.ready = false
+                p.components.pc.data.points = 0
+              })
+            } else {
+              // Start next round with new eagle
+              state.phase = "starting"
+              state.willStart = world.tick + 40 * 3
+              state.nextSeed = randomInt(1000000)
+            }
+          }
+        }
+
+        // Start round
+        if (state.phase === "starting" && world.tick === state.willStart!) {
+          world.announce(`round ${state.round + 1}!`)
+
+          state.phase = "play"
+          state.round += 1
+
+          // New random seed
+          world.random = Random(state.nextSeed)
+
+          // Reset world
+          world.blocks.clear()
+          world.trees = []
+          spawnTerrain(world, 24)
+
+          // Reset player positions
+          for (const character of characters) {
+            const { position } = character.components
+            position.setPosition({ 
+              x: 14 + world.random.int(12, 6), 
+              y: 14 + world.random.int(12, 6), 
+              z: 6 
+            })
+            position.setVelocity({ x: 0, y: 0, z: 0 })
+            position.data.flying = false
+          }
+
+          // Choose eagle
+          const candidates = characters.filter(c => !state.startedEagle.includes(c.id))
+          const eagle = world.random.choice(candidates)
+          if (eagle) {
+            eagle.components.position.data.flying = true
+            eagle.components.position.setPosition({ x: 15, y: 31, z: 6 })
+            state.startedEagle.push(eagle.id)
+          }
+        }
+
+        // Handle player physics
+        for (const player of players) {
+          const character = player.components.controlling?.getCharacter(world)
+          if (!character) continue
+
+          const { position } = character.components
+          const { z, rotation, standing } = position.data
+
+          // Reset double jump on landing
+          if (standing) {
+            state.doubleJumped = state.doubleJumped.filter(id => id !== character.id)
+          }
+
+          // Reset rotation drift
+          position.data.rotating = 0
+          if (rotation < 0) position.data.rotating = min(0.08, -rotation)
+          if (rotation > 0) position.data.rotating = -1 * min(0.08, rotation)
+
+          // Respawn if fell off world
+          if (z < -4) {
+            position.setPosition({ x: 20, y: 20, z: 8 })
+          }
+
+          // Eagle catches ducks
+          if (world.mode === "server" && position.data.flying) {
+            const ducks = characters.filter(c => !c.components.position.data.flying)
+
+            for (const duck of ducks) {
+              const duckPos = duck.components.position
+              const distance = XYZdistance(position.data, duckPos.data)
+
+              if (distance < 0.24) {
+                if (state.phase === "play") {
+                  duckPos.data.flying = true
+                  player.components.pc.data.points += 3
+                  world.announce(`${player.components.pc.data.name} caught a duck!`)
+                } else {
+                  duckPos.setPosition({ x: 20, y: 20, z: 6 })
+                }
+              }
+            }
+          }
+        }
+
+        // Spawn apples (collectibles)
+        if (!applesSpawned) {
+          for (let i = 0; i < 25; i++) {
+            world.addEntity(Apple({ id: `d3apple-${1 + i}` }))
+          }
+          applesSpawned = true
+        }
+      }
+    }
+  }
+})
+```
+
+## Entities
+
+### Carl (Player Character)
+
+Location: `core/src/games/craft/Carl.ts`
+
+Similar to Bob from Build game with flying mechanics:
+
+```typescript
+export const Carl = (player: Player): Character => {
+  return Character({
+    id: `carl-${player.id}`,
+    components: {
+      position: Position({
+        x: 8, y: 8, z: 2,
+        friction: true,
+        gravity: 0.003,
+        aim: { x: 0, y: 0 }
+      }),
+      networked: Networked(),
+      inventory: Inventory([AxeItem, PickaxeItem]),
+      collider: Collider({ shape: "ball", radius: 0.1 }),
+      health: Health(),
+      input: Input({
+        // WASD movement
+        // Flying controls (Space/Shift for up/down when flying)
+        // Block placement (MB2)
+        // Double jump for ducks
+      }),
+      actions: Actions({
+        move: moveBlockCharacter,
+        up: flyUpAction,
+        down: flyDownAction,
+        jump: jumpWithDoubleJump,
+        place: placeBlock
+      }),
+      three: Three({
+        // 3D character rendering
+        // First/third person camera
+      })
+    }
+  })
+}
+```
+
+### Procedural Terrain
+
+Location: Generated by `spawnTerrain(world, 24)`
+
+```typescript
+spawnTerrain(world, 24)  // 24x24 chunk terrain
+```
+
+Generates:
+- Grass block ground layer
+- Hills using Perlin noise
+- Trees (oak and spruce)
+- Natural landscape variations
+
+### Apple Entities
+
+Location: `core/src/games/craft/Craft.ts:255`
+
+Collectible items scattered in world:
+
+```typescript
+for (let i = 0; i < 25; i++) {
+  world.addEntity(Apple({ id: `d3apple-${1 + i}` }))
+}
+```
+
+### CraftScoreboard
+
+Location: `core/src/games/craft/CraftScoreboard.ts`
+
+Displays player scores and eagle status.
+
+## Game Phases
+
+### Warmup Phase
+
+- Players join and explore
+- Waiting for all players to ready
+- Free flight available
+- No scoring
+
+### Starting Phase
+
+Location: `core/src/games/craft/Craft.ts:154`
+
+- 3 second countdown (120 ticks)
+- Regenerate terrain with new seed
+- Choose random eagle from candidates
+- Reset all player positions
+
+### Play Phase
+
+Location: `core/src/games/craft/Craft.ts:131`
+
+- Eagle hunts ducks
+- Ducks try to survive
+- Building and breaking blocks allowed
+- Round ends when all ducks caught
+
+## Mechanics
+
+### Eagle vs Duck
+
+**Eagle:**
+- Can fly freely
+- Spawns at high altitude
+- Catches ducks by proximity (< 0.24 distance)
+- Earns 3 points per catch
+
+**Ducks:**
+- Cannot fly
+- Can double jump
+- Must evade eagle
+- Become eagle when caught
+
+### Rotation System
+
+Location: `core/src/games/craft/Craft.ts:194`
+
+```typescript
+// Track who has been eagle
+const candidates = characters.filter(c => !state.startedEagle.includes(c.id))
+const eagle = world.random.choice(candidates)
+if (eagle) {
+  eagle.components.position.data.flying = true
+  state.startedEagle.push(eagle.id)
+}
+```
+
+Ensures all players get a turn as eagle.
+
+### Building
+
+Ducks can build structures to hide:
+- Place blocks with right-click
+- Break blocks with tools
+- Limited by inventory
+
+### Double Jump
+
+Location: `core/src/games/craft/Craft.ts:210`
+
+```typescript
+if (!position.data.standing && state.doubleJumped.includes(character.id)) {
+  return // Already used double jump
+}
+
+if (!position.data.standing) {
+  position.setVelocity({ z: 0.05 })
+  state.doubleJumped.push(character.id)
+} else {
+  position.setVelocity({ z: 0.05 })
+}
+
+// Reset on landing
+if (standing) {
+  state.doubleJumped = state.doubleJumped.filter(id => id !== character.id)
+}
+```
+
+## Terrain Generation
+
+Location: Uses `spawnTerrain` utility
+
+```typescript
+// Clear existing terrain
+world.blocks.clear()
+world.trees = []
+
+// Generate new terrain
+spawnTerrain(world, 24)
+```
+
+Generates:
+- Base grass layer at z=0
+- Height variations using noise
+- Tree placement
+- Natural-looking landscape
+
+## Controls
+
+Desktop:
+- **WASD**: Movement
+- **Space**: Jump (or fly up if eagle)
+- **Shift**: Fly down (eagle only)
+- **F**: Toggle flight mode
+- **MB1**: Break blocks
+- **MB2**: Place blocks
+- **Mouse**: Aim camera
+- **Esc**: Menu
+
+Mobile:
+- Left joystick: Movement
+- Right joystick: Camera
+- Jump button
+- Build button
+- Flight controls
+
+## Block System
+
+Location: `core/src/games/craft/Craft.ts:65`
+
+```typescript
+BlockMeshSystem({ 
+  counts: { 
+    grass: 20000,   // Most common block
+    leaf: 1000,     // Tree leaves
+    oak: 1000,      // Oak wood
+    spruce: 1000,   // Spruce wood
+    marble: 0       // Not used in Craft
+  } 
+})
+```
+
+Voxel chunk rendering with high grass count for terrain.
+
+## Random Seed System
+
+Location: `core/src/games/craft/Craft.ts:169`
+
+```typescript
+// Generate new seed
+state.nextSeed = randomInt(1000000)
+
+// Apply seed for deterministic generation
+world.random = Random(state.nextSeed)
+```
+
+Ensures consistent terrain generation across clients.
+
+## Win Condition
+
+Location: `core/src/games/craft/Craft.ts:135`
+
+```typescript
+if (characters.length === state.startedEagle.length) {
+  // Everyone has been eagle
+  const winner = players[0].components.pc.data.name  // Highest score
+  world.announce(`${winner} wins! GG!`)
+
+  // Reset game
+  state.phase = "warmup"
+  state.startedEagle = []
+  state.round = 0
+
+  players.forEach(p => {
+    p.components.pc.data.ready = false
+    p.components.pc.data.points = 0
+  })
+}
+```
+
+## Key Features
+
+### Procedural Generation
+
+- New terrain each round
+- Deterministic from seed
+- Trees and landscape features
+- Synchronized across clients
+
+### Asymmetric Gameplay
+
+- Eagle has flight advantage
+- Ducks have building advantage
+- Dynamic role switching
+- Fair rotation system
+
+### Voxel Building
+
+- Place/break blocks in real-time
+- Build defensive structures
+- Terrain modification
+- Inventory management
+
+### First-Person 3D
+
+- Three.js rendering
+- Pointer lock controls
+- First/third person toggle
+- Smooth camera movement
+
+## Related Files
+
+- `Carl.ts` - Player character
+- `CraftScoreboard.ts` - UI scoreboard
+- `MobileUI.ts` - Touch controls
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Build" href="/games/build">
+    Pure creative building mode
+  </Card>
+  <Card title="Island" href="/games/island">
+    Another survival-style game
+  </Card>
+</CardGroup>

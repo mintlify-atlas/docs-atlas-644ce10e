@@ -1,0 +1,499 @@
+---
+title: "Rollback Syncer"
+description: "Rollback-based netcode with client-side prediction for low-latency multiplayer"
+---
+
+## Overview
+
+The `RollbackSyncer` implements rollback netcode, where clients predict gameplay locally and roll back to correct server state when mismatches occur. This provides instant input response at the cost of increased complexity.
+
+## How Rollback Netcode Works
+
+```
+Client                                Server
+  |
+  |-- Predict tick N locally
+  |-- Send input (tick N) ----------->
+  |                                     |-- Receive input
+  |                                     |-- Simulate tick N
+  |<-- Send authoritative state (N) ---|
+  |
+  |-- Compare predicted vs server
+  |-- Rollback if mismatch
+  |-- Re-simulate from tick N to current
+```
+
+**Key characteristics:**
+- Clients predict gameplay locally (zero input latency)
+- Server validates and sends authoritative state
+- Clients roll back and re-simulate when wrong
+- Complex but feels responsive
+
+## Syncer Interface
+
+```ts
+export const RollbackSyncer = (world: World): Syncer => {
+  let last = 0
+  let rollback = false
+  const client = world.client as Client
+
+  return {
+    write: (world) => ({ /* ... */ }),
+    read: ({ world, buffer }) => { /* ... */ }
+  }
+}
+```
+
+## Write: Send Local Actions
+
+```ts
+write: (world) => ({
+  actions: world.actions.fromTick(world.tick, s => s.offline !== true),
+  chats: world.messages.atTick(world.tick) ?? {},
+  game: world.game.id,
+  playerId: client.playerId(),
+  serializedEntities: {},
+  tick: world.tick,
+  timestamp: Date.now(),
+  type: "game"
+})
+```
+
+**What gets sent:**
+- **actions**: Only actions from the local player (filters out `offline` actions from other players)
+- **tick**: Current client tick (may be ahead of server)
+- **timestamp**: For latency calculation
+
+**Note:** Unlike delay netcode, the client sends actions for the current tick, not the next tick, because it's already simulating locally.
+
+## Read: Validate and Rollback
+
+The read process is complex and handles:
+1. Buffer management (consume multiple messages if behind)
+2. Other player synchronization
+3. Action validation
+4. Entity state comparison
+5. Rollback and re-simulation
+
+### Buffer Consumption
+
+```ts
+read: ({ world, buffer }) => {
+  rollback = false
+
+  // Get oldest message
+  let message = buffer.sort((a, b) => a.tick - b.tick).shift()
+
+  if (!message) return
+
+  // Consume buffer if multiple messages queued
+  if (buffer.length > 1) {
+    while (buffer.length > 1) {
+      preRead(message)
+      message = buffer.shift() as GameData
+    }
+  }
+
+  // Dynamic tickrate adjustment based on drift
+  const target = client.env === "discord" ? 2 : 2
+  if ((message.diff ?? 1) > target + 1) {
+    world.tickrate = 30  // Speed up
+  } else if ((message.diff ?? 2) < target) {
+    world.tickrate = 20  // Slow down
+  } else {
+    world.tickrate = 25  // Normal
+  }
+}
+```
+
+### Other Player Handling
+
+```ts
+const movementActions = ["move", "moveAnalog", "jump", "point", "shoot"]
+
+const handleOtherPlayers = (message: GameData) => {
+  // Apply movement actions for other players immediately
+  if (message.actions[message.tick]) {
+    for (const [entityId, actions] of entries(message.actions[message.tick])) {
+      if (otherCharacter(entityId, world) || otherPlayer(actions, world)) {
+        for (const action of actions) {
+          if (movementActions.includes(action.actionId)) {
+            world.actions.push(world.tick, entityId, { ...action, offline: true })
+          }
+        }
+      }
+    }
+  }
+
+  // Apply non-movement actions with rollback
+  for (const [tick, actionSet] of entries(message.actions)) {
+    for (const [entityId, actions] of entries(actionSet)) {
+      if (otherCharacter(entityId, world)) {
+        for (const action of actions) {
+          if (!movementActions.includes(action.actionId)) {
+            const pushed = world.actions.push(Number(tick), entityId, { ...action, offline: true })
+            if (pushed) mustRollback(`non-movement action tick:${tick} id:${action.actionId}`)
+          }
+        }
+      }
+    }
+  }
+
+  // Deserialize other player entities
+  keys(message.serializedEntities).forEach((entityId) => {
+    if (otherCharacter(entityId, world)) {
+      world.entity(entityId)?.deserialize(message.serializedEntities[entityId])
+    }
+  })
+}
+```
+
+### Action Validation
+
+```ts
+const localActions = world.actions.atTick(message.tick) ?? {}
+
+if (message.actions[message.tick]) {
+  for (const [entityId, actions] of entries(message.actions[message.tick])) {
+    if (otherCharacter(entityId, world) || otherPlayer(actions, world)) {
+      continue
+    }
+
+    // Check local has actions for this entity
+    if (!localActions[entityId]) {
+      mustRollback(`no actions locally for entity:${entityId}`)
+      break
+    }
+
+    // Check each action exists locally
+    for (const action of actions) {
+      if (localActions[entityId].find((a) => a.actionId === action.actionId) === undefined) {
+        mustRollback(`action not found locally entity:${entityId} action:${action.actionId}`)
+        break
+      }
+    }
+
+    // Check remote has each local action
+    for (const action of localActions[entityId]) {
+      if (!ignoreActions.includes(action.actionId) && 
+          actions.find((a) => a.actionId === action.actionId) === undefined) {
+        mustRollback(`action not at remote entity:${entityId} action:${action.actionId}`)
+        break
+      }
+    }
+  }
+}
+```
+
+### Entity State Validation
+
+```ts
+const local = world.entitiesAtTick[message.tick]
+const remote = message.serializedEntities
+
+if (!local) {
+  mustRollback("no entities locally")
+} else if (keys(local).length !== keys(remote).length) {
+  mustRollback(`entity count mismatch ${keys(local).length} ${keys(remote).length}`)
+}
+
+if (!rollback) {
+  for (const [entityId, serializedEntity] of entries(remote)) {
+    if (otherCharacter(entityId, world)) continue
+
+    if (local[entityId]) {
+      if (stringify(local[entityId]) !== stringify(serializedEntity)) {
+        mustRollback(`entity: ${entityId} mismatch ${message.tick}`)
+        logDiff(local[entityId], serializedEntity)
+      }
+    }
+  }
+}
+```
+
+### Rollback and Re-simulation
+
+```ts
+if (rollback && message.tick > world.game.started) {
+  const was = world.tick
+
+  // Switch game if needed
+  if (message.game !== world.game.id) {
+    world.setGame(message.game)
+  }
+
+  // Set tick to just before server tick
+  world.tick = message.tick - 1
+
+  // Sync entities to server state
+  keys(message.serializedEntities).forEach((entityId) => {
+    if (otherCharacter(entityId, world)) return
+
+    if (!world.entities[entityId]) {
+      // Add missing entity
+      const entityKind = entityId.split("-")[0]
+      const constructor = entityConstructors[entityKind]
+      if (constructor) {
+        world.addEntity(constructor({ id: entityId }))
+        world.entity(entityId)?.deserialize(message.serializedEntities[entityId])
+      }
+    } else {
+      // Update existing entity
+      world.entity(entityId)?.deserialize(message.serializedEntities[entityId])
+    }
+  })
+
+  // Remove dangling entities
+  for (const [entityId, entity] of entries(world.entities)) {
+    if (entity.components.networked && !message.serializedEntities[entityId]) {
+      world.removeEntity(entityId)
+    }
+  }
+
+  // Set server actions
+  if (message.actions[message.tick]) {
+    entries(message.actions[message.tick]).forEach(([entityId, actions]) => {
+      if (!otherCharacter(entityId, world)) {
+        world.actions.set(message.tick, entityId, actions)
+      }
+    })
+  }
+
+  // Call system rollback handlers
+  values(world.systems).forEach((system) => {
+    system.onRollback?.()
+  })
+
+  // Calculate frames to roll forward
+  const gap = world.tick - message.tick
+  const framesForward = (gap >= 2 && gap <= 9) 
+    ? gap 
+    : ceil(client.net.ms * 2 / world.tickrate) + 2
+
+  // Re-simulate from server tick to current
+  for (let i = 0; i < framesForward; i++) {
+    world.onTick({ isRollback: true })
+  }
+
+  console.log(`rollback was:${was} msg:${message.tick} forward:${framesForward} end:${world.tick}`)
+}
+```
+
+## System Rollback Handlers
+
+Systems can implement `onRollback` to reset state:
+
+```ts
+export const MySystem = SystemBuilder({
+  id: "MySystem",
+  init: (world) => {
+    let particleEffects: ParticleEffect[] = []
+
+    return {
+      id: "MySystem",
+      query: ["position"],
+      onTick: () => {
+        // Create effects
+        particleEffects.push(createParticle())
+      },
+      onRollback: () => {
+        // Clear non-deterministic state
+        particleEffects = []
+      }
+    }
+  }
+})
+```
+
+## When to Use Rollback Netcode
+
+<CardGroup cols={2}>
+  <Card title="Good For" icon="check">
+    - Fast-paced action games
+    - Fighting games
+    - First-person shooters
+    - Competitive multiplayer
+    - Games requiring instant input feedback
+    - High-skill gameplay
+  </Card>
+  
+  <Card title="Challenges" icon="triangle-exclamation">
+    - Complex implementation
+    - Higher bandwidth usage
+    - Visual glitches during rollback
+    - Non-deterministic systems require special handling
+    - More CPU usage (re-simulation)
+  </Card>
+</CardGroup>
+
+## Example: Legends Game
+
+```ts
+import { GameBuilder } from "@piggo-gg/core"
+
+export const LegendsGame = GameBuilder({
+  id: "legends",
+  renderer: "three",
+  netcode: "rollback",  // Use rollback netcode
+  systems: [/* ... */],
+  state: { kills: {} },
+  settings: { 
+    mouseSpeed: 0.002,
+    mouseSensitivity: 1
+  }
+})
+```
+
+## Client-Side Usage
+
+<Tabs>
+  <Tab title="Client">
+    ```ts
+    import { DefaultWorld, Client } from "@piggo-gg/core"
+
+    const world = DefaultWorld({ mode: "client" })
+    const client = Client({ world })
+
+    client.lobbyCreate("legends", (response) => {
+      // RollbackSyncer is used because game.netcode === "rollback"
+      
+      // Input is applied immediately (zero latency)
+      world.actions.push(world.tick, characterId, {
+        actionId: "shoot",
+        playerId: client.playerId()
+      })
+      
+      // Rollback happens automatically when server state differs
+    })
+    ```
+  </Tab>
+  
+  <Tab title="Server">
+    ```ts
+    import { ServerWorld } from "@piggo-gg/server"
+
+    const serverWorld = ServerWorld({ creator: ws })
+
+    // NetServerSystem handles rollback netcode:
+    // - Receives predicted client actions
+    // - Validates and simulates authoritative state
+    // - Sends back to clients for validation
+    ```
+  </Tab>
+</Tabs>
+
+## Determinism Requirements
+
+For rollback to work correctly, all gameplay must be deterministic:
+
+<CodeGroup>
+```ts Good: Deterministic
+// Use seeded random from world
+const value = world.random.next()
+
+// Use tick-based timing
+if (world.tick % 60 === 0) {
+  spawnEnemy()
+}
+```
+
+```ts Bad: Non-deterministic
+// Don't use Math.random()
+const value = Math.random()
+
+// Don't use Date.now() or performance.now()
+if (Date.now() - startTime > 1000) {
+  spawnEnemy()
+}
+
+// Don't use frame time
+position.x += velocity.x * deltaTime
+```
+</CodeGroup>
+
+## Offline Actions
+
+Actions from other players are marked as `offline` to prevent re-sending:
+
+```ts
+// Server sends action for player 2
+world.actions.push(tick, "character-player2", {
+  actionId: "jump",
+  playerId: "player2",
+  offline: true  // Don't send back to server
+})
+
+// When syncing, filter out offline actions
+actions: world.actions.fromTick(world.tick, s => s.offline !== true)
+```
+
+## Dynamic Tickrate Adjustment
+
+The syncer adjusts simulation speed based on client-server drift:
+
+```ts
+const target = 2  // Target ticks ahead of server
+
+if ((message.diff ?? 1) > target + 1) {
+  console.log("speed up")
+  world.tickrate = 30  // Catch up to server
+} else if ((message.diff ?? 2) < target) {
+  console.log("slow down")
+  world.tickrate = 20  // Wait for server
+} else {
+  world.tickrate = 25  // Normal speed
+}
+```
+
+## Debugging Rollback
+
+```ts
+// Log rollback events
+const mustRollback = (reason: string) => {
+  console.log(`MUST ROLLBACK world:${world.tick}`, reason)
+  rollback = true
+}
+
+// Compare entity diffs
+import { logDiff } from "@piggo-gg/core"
+logDiff(localEntity, remoteEntity)
+
+// Track rollback frequency
+if (rollback) {
+  console.log(`rollback was:${was} msg:${message.tick} forward:${framesForward} end:${world.tick}`)
+}
+```
+
+## Performance Optimization
+
+```ts
+// Skip rollback during rollback re-simulation
+onTick: ({ isRollback }) => {
+  if (isRollback) {
+    // Skip expensive effects
+    return
+  }
+  
+  // Normal tick logic
+  createParticles()
+  playSound()
+}
+
+// Mark systems as skipOnRollback
+export const MySystem = SystemBuilder({
+  id: "MySystem",
+  init: (world) => ({
+    id: "MySystem",
+    query: [],
+    skipOnRollback: true,  // Don't run during re-simulation
+    onTick: () => { /* ... */ }
+  })
+})
+```
+
+## Source Reference
+
+- RollbackSyncer: `core/src/net/RollbackSyncer.ts`
+- NetServerSystem: `core/src/ecs/systems/net/NetServerSystem.ts:53-115`
+- NetClientReadSystem: `core/src/ecs/systems/net/NetClientSystem.ts:38-113`
+- Entity serialization: Used for state comparison during rollback

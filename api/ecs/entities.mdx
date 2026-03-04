@@ -1,0 +1,467 @@
+---
+title: Entities
+description: Entity API reference for Piggo's ECS architecture
+---
+
+## Overview
+
+Entities are uniquely identified collections of components. They represent game objects like players, characters, items, and UI elements.
+
+## Core Types
+
+### Entity
+
+```typescript
+type Entity<T extends ComponentTypes = ComponentTypes> = {
+  id: string
+  persists?: boolean
+  components: { [P in T['type']]: Extract<T, { type: P }> }
+  serialize: () => SerializedEntity
+  deserialize: (data: SerializedEntity, component?: ValidComponents) => void
+  removed: boolean
+}
+```
+
+<ParamField path="id" type="string" required>
+  Unique identifier for the entity
+</ParamField>
+
+<ParamField path="persists" type="boolean" default="false">
+  If true, entity survives `world.clear()` calls
+</ParamField>
+
+<ParamField path="components" type="object" required>
+  Map of component type to component instance
+</ParamField>
+
+<ParamField path="removed" type="boolean">
+  True if entity has been removed from world
+</ParamField>
+
+<ParamField path="serialize" type="function">
+  Convert entity to network-safe format
+  ```typescript
+  () => SerializedEntity
+  ```
+</ParamField>
+
+<ParamField path="deserialize" type="function">
+  Update entity from network data
+  ```typescript
+  (data: SerializedEntity, component?: ValidComponents) => void
+  ```
+</ParamField>
+
+### ProtoEntity
+
+```typescript
+type ProtoEntity<T extends ComponentTypes = ComponentTypes> = {
+  id: string
+  persists?: boolean
+  components: {
+    [P in T['type']]: Extract<T, { type: P }>
+  }
+}
+```
+
+The input type for creating entities. Does not include methods.
+
+## Entity Function
+
+```typescript
+Entity<T>(protoEntity: ProtoEntity<T>): Entity<T>
+```
+
+Creates an entity with serialization methods.
+
+**Example**
+```typescript core/src/ecs/entities/players/Player.ts
+export const Player = ({ id, name, team }: PlayerProps): Player => 
+  Entity<PC | Controlling | Actions | Team>({
+    id: id,
+    persists: true,
+    components: {
+      networked: Networked(),
+      pc: PC({ name: name ?? "noob" }),
+      controlling: Controlling(),
+      actions: Actions({ SwitchTeam }),
+      team: Team(team ?? 1)
+    }
+  })
+```
+
+## Specialized Entity Types
+
+### Player
+
+```typescript
+type Player = Entity<PC | Controlling | Actions | Team>
+```
+
+Represents a connected player (not their in-game character).
+
+**Components:**
+- `pc` - Player name, points, ready state
+- `controlling` - Link to controlled character
+- `actions` - Player-level actions (switch team, ready up)
+- `team` - Team assignment
+- `networked` - Network sync
+
+**Example**
+```typescript core/src/ecs/entities/players/Player.ts
+Player({
+  id: "player-123",
+  name: "Alice",
+  team: 1,
+  leader: false
+})
+```
+
+### Character
+
+```typescript
+type Character = Entity<Position | Collider | Input | Actions | Team>
+```
+
+Represents an in-game character controlled by a player or AI.
+
+**Required Components:**
+- `position` - World position and movement
+- `collider` - Physics collision
+- `input` - Control bindings
+- `actions` - Character actions
+- `team` - Team membership
+
+**Example**
+```typescript core/src/ecs/entities/characters/Skelly.ts
+export const Skelly = (player: Player, pos?: XY) => Character({
+  id: `skelly-${player.id}`,
+  components: {
+    position: Position({
+      x: pos?.x ?? 0,
+      y: pos?.y ?? 150,
+      z: 50,
+      velocityResets: 1,
+      speed: 125,
+      gravity: 0.3
+    }),
+    networked: Networked(),
+    collider: Collider({ shape: "ball", radius: 4, hittable: true }),
+    health: Health({ hp: 100 }),
+    team: player.components.team,
+    inventory: Inventory([]),
+    input: Input({
+      press: {
+        ...WASDInputMap.press,
+        " ": () => ({ actionId: "jump" }),
+        "r": () => ({ actionId: "jetpack" })
+      }
+    }),
+    actions: Actions({
+      move: Move,
+      point: Point,
+      jump: Action("jump", ({ entity }) => {
+        if (!entity?.components?.position?.data.standing) return
+        entity.components.position.setVelocity({ z: 5 })
+      })
+    }),
+    renderable: Renderable({
+      anchor: { x: 0.55, y: 0.9 },
+      scale: 1.2,
+      zIndex: 4,
+      interpolate: true
+    })
+  }
+})
+```
+
+### ItemEntity
+
+```typescript
+type ItemEntity = Entity<ItemComponents>
+type ItemComponents = Position | Item | Actions | Input | Networked
+```
+
+Represents an equippable item (weapon, tool, etc).
+
+**Example**
+```typescript core/src/ecs/actions/attacks/Blaster.ts
+export const BlasterItem = ({ character }: { character: Character }) => {
+  return Entity<ItemComponents>({
+    id: `blaster-${character.id}`,
+    components: {
+      position: Position(),
+      networked: Networked(),
+      item: Item({
+        name: "blaster",
+        onTick: (world) => {
+          // Item logic
+        }
+      }),
+      input: Input({
+        press: {
+          "mb1": ({ world, aim }) => {
+            return { actionId: "shoot", params: { aim } }
+          }
+        }
+      }),
+      actions: Actions({
+        shoot: Action<ShootParams>("shoot", ({ world, params }) => {
+          // Shoot projectile
+        })
+      }),
+      three: Three({
+        init: async ({ three }) => {
+          // Load 3D model
+        },
+        onRender: ({ world, delta }) => {
+          // Update model position
+        }
+      })
+    }
+  })
+}
+```
+
+## Built-in Entity Factories
+
+<AccordionGroup>
+  <Accordion title="Player Entities" icon="user">
+    ### Player
+    ```typescript
+    Player(props: PlayerProps): Player
+    ```
+
+    <ParamField path="id" type="string" required>
+      Unique player ID (e.g., socket ID)
+    </ParamField>
+    <ParamField path="name" type="string">
+      Display name
+    </ParamField>
+    <ParamField path="team" type="1 | 2">
+      Team number
+    </ParamField>
+    <ParamField path="leader" type="boolean">
+      Is lobby leader
+    </ParamField>
+
+    ### DummyPlayer
+    ```typescript
+    DummyPlayer(): Player
+    ```
+    Testing player entity.
+
+    **Source:** `core/src/ecs/entities/players/Player.ts:24`
+  </Accordion>
+
+  <Accordion title="Characters" icon="person-running">
+    ### Skelly
+    ```typescript
+    Skelly(player: Player, pos?: XY): Character
+    ```
+    Basic character with movement, jumping, and inventory.
+
+    **Source:** `core/src/ecs/entities/characters/Skelly.ts:8`
+  </Accordion>
+
+  <Accordion title="Objects" icon="cube">
+    ### Apple
+    ```typescript
+    Apple(props: ObjectProps): Entity
+    ```
+    Collectible food item.
+
+    ### Sun
+    ```typescript
+    Sun(): Entity
+    ```
+    3D directional light source.
+  </Accordion>
+
+  <Accordion title="Terrain" icon="mountain">
+    ### Background
+    ```typescript
+    Background(color?: number): Entity
+    ```
+    Pixi background sprite.
+
+    ### LineWall
+    ```typescript
+    LineWall(props: LineWallProps): Entity
+    ```
+    Static collision boundary.
+  </Accordion>
+
+  <Accordion title="UI Elements" icon="window">
+    ### Crosshair
+    ```typescript
+    Crosshair(): Entity
+    ```
+    Center screen reticle.
+
+    ### Cursor
+    ```typescript
+    Cursor(): Entity
+    ```
+    Mouse cursor sprite.
+
+    ### Hitmarker
+    ```typescript
+    Hitmarker(): Entity
+    ```
+    Hit confirmation indicator.
+
+    ### ThreeText
+    ```typescript
+    ThreeText(props: ThreeTextProps): Entity
+    ```
+    3D floating text label.
+
+    ### ThreeNametag
+    ```typescript
+    ThreeNametag(props: NametagProps): Entity
+    ```
+    Player name above character.
+
+    ### Tooltip
+    ```typescript
+    Tooltip(props: TooltipProps): Entity
+    ```
+    HTML tooltip overlay.
+
+    ### ScorePanel
+    ```typescript
+    ScorePanel(): Entity
+    ```
+    Game score display.
+
+    ### PvEHUD
+    ```typescript
+    PvEHUD(): Entity
+    ```
+    PvE game HUD elements.
+  </Accordion>
+
+  <Accordion title="Menus" icon="bars">
+    ### EscapeMenu
+    ```typescript
+    EscapeMenu(): Entity
+    ```
+    Pause menu overlay.
+
+    ### LobbiesMenu
+    ```typescript
+    LobbiesMenu(): Entity
+    ```
+    Server browser UI.
+
+    ### SettingsMenu
+    ```typescript
+    SettingsMenu(): Entity
+    ```
+    Game settings panel.
+
+    ### SkinsMenu
+    ```typescript
+    SkinsMenu(): Entity
+    ```
+    Character skin selector.
+
+    ### MusicButton
+    ```typescript
+    MusicButton(): Entity
+    ```
+    Audio toggle button.
+  </Accordion>
+</AccordionGroup>
+
+## Working with Entities
+
+### Creating Entities
+
+```typescript
+import { Entity, Position, Health, Networked } from "@piggo-gg/core"
+
+const enemy = Entity({
+  id: "enemy-1",
+  persists: false,
+  components: {
+    position: Position({ x: 100, y: 100 }),
+    health: Health({ hp: 50 }),
+    networked: Networked()
+  }
+})
+
+world.addEntity(enemy)
+```
+
+### Type-Safe Component Access
+
+```typescript
+import { Entity, Position, Health } from "@piggo-gg/core"
+
+type Enemy = Entity<Position | Health>
+
+const handleDamage = (entity: Enemy) => {
+  // TypeScript knows these components exist
+  entity.components.health.damage(10, world)
+  entity.components.position.setVelocity({ x: 0, y: 0 })
+}
+```
+
+### Querying Entities
+
+```typescript
+// In a system
+onTick: (entities: Entity<Position | Health>[]) => {
+  entities.forEach(entity => {
+    const { position, health } = entity.components
+    if (health.alive()) {
+      // Process living entities
+    }
+  })
+}
+
+// Direct query
+const enemies = world.queryEntities<Position | Health>(
+  ["position", "health"],
+  (e) => e.id.startsWith("enemy-")
+)
+```
+
+### Removing Entities
+
+```typescript
+world.removeEntity(entity.id)
+
+// Or mark for removal
+entity.removed = true
+```
+
+### Persistent Entities
+
+```typescript
+const player = Entity({
+  id: "player-1",
+  persists: true, // Survives world.clear()
+  components: {
+    pc: PC({ name: "Alice" }),
+    controlling: Controlling()
+  }
+})
+```
+
+## Entity Lifecycle
+
+1. **Creation** - `Entity()` factory function
+2. **Registration** - `world.addEntity(entity)`
+3. **System Processing** - Systems query and modify components
+4. **Network Sync** - `serialize()` sends to clients
+5. **Updates** - `deserialize()` applies server state
+6. **Removal** - `world.removeEntity(id)` or `entity.removed = true`
+
+## See Also
+
+- [Component API](/api/ecs/components) - Available components
+- [System API](/api/ecs/systems) - Entity processing logic
+- [World API](/api/core/world) - Entity management

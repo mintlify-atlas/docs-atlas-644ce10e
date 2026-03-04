@@ -1,0 +1,683 @@
+---
+title: 'Hoops'
+description: '2v2 basketball with realistic shooting mechanics and rollback netcode'
+---
+
+Hoops is a competitive 2v2 basketball game featuring physics-based shooting, dribbling mechanics, and skill-based gameplay.
+
+## Gameplay
+
+- **Teams**: 2v2 basketball
+- **Shooting**: Dynamic shot chance based on distance, defenders, and positioning
+- **Dribbling**: Automatic bounce mechanics
+- **Passing**: Team ball movement
+- **Scoring**: 2-point and 3-point shots
+- **Win**: First to 11 points
+
+## Technical Implementation
+
+### GameBuilder Configuration
+
+Location: `core/src/games/hoops/Hoops.ts:39`
+
+```typescript
+export const Hoops: GameBuilder<HoopsState, HoopsSettings> = {
+  id: "hoops",
+  init: (world) => ({
+    id: "hoops",
+    netcode: "rollback",
+    renderer: "pixi",
+    settings: {
+      showControls: true
+    },
+    state: {
+      phase: "play",
+      scoreLeft: 0,
+      scoreRight: 0,
+      scoredTeam: 0,
+      scoredTick: 0,
+      shotTick: 0,
+      shotPlayer: "",
+      lastShotValue: 2,
+      shotFactors: [],
+      shotChance: 0,
+      ballOwner: "",
+      ballOwnerTeam: 0,
+      dribbleLocked: false
+    },
+    systems: [
+      PhysicsSystem("local"),
+      PhysicsSystem("global"),
+      SpawnSystem({ spawner: Howard, pos: { x: COURT_CENTER.x, y: 0, z: 0 } }),
+      HoopsSystem,
+      ShadowSystem,
+      PixiRenderSystem,
+      PixiNametagSystem(),
+      HUDSystem(controls),
+      PixiCameraSystem({
+        follow: () => ({ x: COURT_CENTER.x, y: 0, z: 0 }),
+        resize: () => {
+          const { w } = screenWH()
+          return min(3.4, w / (550 * 1.1))
+        }
+      }),
+      PixiDebugSystem
+    ],
+    entities: [
+      Background({ rays: true }),
+      Cursor(),
+      Ball(),
+      Court(),
+      CourtLines(),
+      Goal1(),
+      Goal2(),
+      Centerline(),
+      CenterCircle(),
+      ScorePanel(),
+      HtmlChat(),
+      EscapeMenu(world),
+      HtmlLagText(),
+      HtmlFpsText()
+    ]
+  })
+}
+```
+
+### State Management
+
+```typescript
+export type HoopsState = {
+  phase: "play" | "score"
+  scoreLeft: number
+  scoreRight: number
+  scoredTeam: 0 | 1 | 2
+  scoredTick: number
+  shotTick: number
+  shotPlayer: string
+  lastShotValue: 2 | 3        // Points for last shot
+  shotFactors: string[]        // Factors affecting shot
+  shotChance: number           // Current shot percentage
+  ballOwner: string            // Player holding ball
+  ballOwnerTeam: 0 | 1 | 2
+  dribbleLocked: boolean       // Can't move while dribbling
+}
+```
+
+## Systems
+
+### HoopsSystem
+
+Location: `core/src/games/hoops/Hoops.ts:100`
+
+Core basketball logic:
+
+```typescript
+const HoopsSystem = SystemBuilder({
+  id: "HoopsSystem",
+  init: (world) => {
+    const mobileUI = MobileUI(world)
+    
+    // Ball orbit calculation
+    const orbitOffset = (pointingDelta: XY) => {
+      const hypotenuse = hypot(pointingDelta.x, pointingDelta.y)
+      if (!hypotenuse) return { x: BALL_ORBIT_DISTANCE, y: 0 }
+
+      const hypX = pointingDelta.x / hypotenuse
+      const hypY = pointingDelta.y / hypotenuse
+
+      return {
+        x: round(hypX * BALL_ORBIT_DISTANCE, 2),
+        y: round(hypY * (BALL_ORBIT_DISTANCE / 2), 2)
+      }
+    }
+
+    // Check if position is on court
+    const isInCourtBounds = (x: number, y: number): boolean => {
+      if (y < -halfCourtHeight || y > halfCourtHeight) return false
+
+      const t = (y + halfCourtHeight) / COURT_HEIGHT
+      const leftEdge = -COURT_SPLAY * t
+      const rightEdge = COURT_WIDTH + COURT_SPLAY * t
+
+      return x >= leftEdge && x <= rightEdge
+    }
+
+    const resetBall = () => {
+      const ball = world.entity<Position>("ball")
+      const ballPos = ball?.components.position
+      if (!ballPos) return
+
+      ballPos.setVelocity({ x: 0, y: 0, z: 0 })
+      ballPos.setRotation(0)
+      ballPos.setGravity(0.1)
+      ballPos.setPosition({ x: COURT_CENTER.x, y: 0, z: 0 })
+      ballPos.data.offset = { x: 0, y: 0 }
+    }
+
+    const assignBall = (playerId: string, team: 1 | 2) => {
+      const ball = world.entity<Position | Renderable>("ball")
+      const ballPos = ball?.components.position
+      if (!ballPos) return
+
+      const state = world.game.state as HoopsState
+      state.ballOwner = playerId
+      state.ballOwnerTeam = team
+      state.dribbleLocked = false
+
+      ballPos.setVelocity({ x: 0, y: 0, z: 0 })
+      ballPos.setGravity(0)
+      ballPos.setPosition({ z: 3.6 })
+
+      if (ball?.components.collider) {
+        ball.components.collider.setGroup("none")
+      }
+    }
+
+    return {
+      id: "HoopsSystem",
+      query: [],
+      priority: 9,
+      onTick: () => {
+        mobileUI?.update()
+        const state = world.game.state as HoopsState
+        const ball = world.entity<Position | Renderable>("ball")
+        const ballPos = ball?.components.position
+        if (!ballPos) return
+
+        const players = world.queryEntities<Position | Team>(["position", "team", "input"])
+
+        // Reset after score
+        if (state.phase === "score" && (world.tick - state.scoredTick) > SCORE_RESET_TICKS) {
+          if (state.scoreLeft >= 11 || state.scoreRight >= 11) {
+            state.scoreLeft = 0
+            state.scoreRight = 0
+          }
+
+          state.phase = "play"
+          state.scoredTeam = 0
+          state.ballOwner = ""
+          state.ballOwnerTeam = 0
+        }
+
+        // Ball carrying
+        if (state.ballOwner) {
+          const owner = world.entity<Position | Team>(state.ballOwner)
+          const ownerPos = owner?.components.position
+
+          if (!ownerPos) {
+            state.ballOwner = ""
+            state.ballOwnerTeam = 0
+          } else {
+            const offset = orbitOffset(ownerPos.data.pointingDelta)
+            const shouldDribble = !state.dribbleLocked && ownerPos.data.standing
+            const carryZ = ownerPos.data.z + SHOT_CHARGE_Z
+
+            ballPos.data.offset = offset
+
+            if (!shouldDribble) {
+              // Carry ball
+              ballPos.setGravity(0)
+              ballPos.setVelocity({
+                x: ownerPos.data.velocity.x,
+                y: ownerPos.data.velocity.y
+              })
+              ballPos.setPosition({
+                x: ownerPos.data.x + offset.x,
+                y: ownerPos.data.y + offset.y,
+                z: carryZ
+              })
+            } else {
+              // Dribble ball
+              ballPos.setGravity(DRIBBLE_GRAVITY + 0.0005 * ownerPos.getSpeed())
+              ballPos.setVelocity({
+                x: ownerPos.data.velocity.x,
+                y: ownerPos.data.velocity.y
+              })
+              ballPos.setPosition({
+                x: ownerPos.data.x + offset.x,
+                y: ownerPos.data.y + offset.y
+              })
+            }
+          }
+        }
+
+        // Ball bounce
+        if (ballPos.data.z <= 0 && ballPos.data.velocity.z <= -0.01) {
+          ballPos.setVelocity({ z: DRIBBLE_BOUNCE })
+          world.client?.sound.playChoice(["bounce1", "bounce2", "bounce3", "bounce4"])
+        }
+
+        // Auto pickup
+        if (!state.ballOwner && ballPos.data.z <= BALL_PICKUP_Z) {
+          let closest: { id: string, team: 1 | 2, distance: number } | null = null
+          const shotCooldownActive = !!state.shotPlayer
+            && (world.tick - state.shotTick) < BALL_PICKUP_COOLDOWN_TICKS
+
+          for (const player of players) {
+            if (shotCooldownActive && player.id === state.shotPlayer) continue
+
+            const distance = hypot(
+              player.components.position.data.x - ballPos.data.x,
+              player.components.position.data.y - ballPos.data.y
+            )
+
+            if (distance <= BALL_PICKUP_RANGE && (!closest || distance < closest.distance)) {
+              closest = {
+                id: player.id,
+                team: player.components.team.data.team,
+                distance
+              }
+            }
+          }
+
+          if (closest) assignBall(closest.id, closest.team)
+        }
+
+        // Shot chance calculation
+        if (state.ballOwner) {
+          const owner = world.entity<Position | Team>(state.ballOwner)
+          if (owner?.components.position && owner?.components.team) {
+            const ownerTeam = owner.components.team.data.team
+            const hoopTarget = ownerTeam === 1 ? HOOP_TARGET_RIGHT : HOOP_TARGET_LEFT
+            const shotChance = getShotChance({
+              ballPos: ballPos.data,
+              shooter: owner,
+              players,
+              hoopTarget
+            })
+            state.shotFactors = shotChance.factors.map(f => f.name)
+            state.shotChance = shotChance.total
+          }
+        }
+
+        // Detect swish
+        if (!state.ballOwner && state.phase !== "score" 
+            && ballPos.data.velocity.z < 0 && ballPos.data.z >= 36) {
+          const distLeft = XYdistance(ballPos.data, { x: -26, y: 0 })
+          const distRight = XYdistance(ballPos.data, { x: COURT_WIDTH + 26, y: 0 })
+
+          if (distLeft < 6) {
+            world.client?.sound.play({ name: "swish" })
+            state.phase = "score"
+            state.scoredTick = world.tick
+            state.scoredTeam = 2
+            state.scoreRight += state.lastShotValue
+          } else if (distRight < 6) {
+            world.client?.sound.play({ name: "swish" })
+            state.phase = "score"
+            state.scoredTick = world.tick
+            state.scoredTeam = 1
+            state.scoreLeft += state.lastShotValue
+          }
+        }
+
+        // Ball spin
+        const { x, y } = ballPos.data.velocity
+        ballPos.data.rotation += 0.001 * sqrt((x * x + y * y)) * sign(x || 1)
+      }
+    }
+  }
+})
+```
+
+## Entities
+
+### Howard (Player Character)
+
+Location: `core/src/games/hoops/Howard.ts:18`
+
+Basketball player:
+
+```typescript
+export const Howard = (player: Player) => {
+  const seed = player.id.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0)
+  const yOffset = (seed % 3 - 1) * 14
+  const spawnX = player.components.team.data.team === 1 ? 80 : COURT_WIDTH - 80
+
+  return Character({
+    id: `howard-${player.id}`,
+    components: {
+      position: Position({
+        x: spawnX, 
+        y: yOffset, 
+        speed: HOWARD_SPEED,  // 135
+        gravity: 0.4, 
+        friction: true
+      }),
+      networked: Networked(),
+      collider: Collider({ shape: "ball", radius: 4, group: "notme1" }),
+      team: Team(player.components.team.data.team),
+      shadow: Shadow(5, 1),
+      input: Input({
+        joystick: ({ client }) => {
+          const { power, angle } = client.controls.left
+          const dir: XY = { x: cos(angle), y: sin(angle) }
+          return { actionId: "moveAnalog", params: { dir, power, angle } }
+        },
+        press: {
+          ...WASDInputMap.press,
+          "mb1": () => ({ actionId: "shoot" }),
+          " ": () => ({ actionId: "jump" }),
+          "mb2": ({ mouse }) => ({ actionId: "pass", params: { target: mouse } }),
+          "t": ({ world }) => {
+            world.actions.push(world.tick + 2, player.id, { actionId: "SwitchTeam" })
+          }
+        }
+      }),
+      actions: Actions({
+        move: moveHoward,
+        moveAnalog: moveHowardAnalog,
+        point: Point,
+        pass: passBall,
+        shoot: shootBall,
+        jump: jumpHoward
+      }),
+      renderable: Renderable({
+        anchor: { x: 0.55, y: 0.9 },
+        scale: 1.2,
+        zIndex: 4,
+        interpolate: true,
+        scaleMode: "nearest",
+        setup: async (r) => {
+          await PixiSkins["dude-white"](r)
+        },
+        animationSelect: VolleyCharacterAnimations,
+        onTick: VolleyCharacterDynamic
+      })
+    }
+  })
+}
+```
+
+### Ball
+
+Location: `core/src/games/hoops/HoopsEntities.ts`
+
+Basketball with physics:
+
+```typescript
+export const Ball = (): Entity => Entity({
+  id: "ball",
+  components: {
+    position: Position({
+      x: COURT_CENTER.x,
+      y: 0,
+      z: 0,
+      gravity: 0.1,
+      velocityResets: 0
+    }),
+    collider: Collider({ shape: "ball", radius: 3, group: "2" }),
+    networked: Networked(),
+    renderable: Renderable({
+      sprite: "basketball",
+      scale: 2.0,
+      zIndex: 3,
+      anchor: { x: 0.5, y: 0.9 }
+    })
+  }
+})
+```
+
+### Court Elements
+
+Location: `core/src/games/hoops/HoopsEntities.ts`
+
+- **Court**: Playing surface
+- **CourtLines**: Boundaries and markings
+- **Centerline**: Half-court division
+- **CenterCircle**: Jump ball area
+- **Goal1/Goal2**: Basketball hoops
+
+## Shooting Mechanics
+
+### Shot Chance Calculation
+
+Location: `core/src/games/hoops/HoopsShot.ts`
+
+```typescript
+export const getShotChance = (params: {
+  ballPos: Position
+  shooter: Entity<Position | Team>
+  players: Entity<Position | Team>[]
+  hoopTarget: XYZ
+}): { total: number, factors: ShotFactor[] } => {
+  const { ballPos, shooter, players, hoopTarget } = params
+  const shooterPos = shooter.components.position.data
+  
+  let chance = 100  // Start at 100%
+  const factors: ShotFactor[] = []
+
+  // Distance penalty
+  const distance = XYdistance(ballPos, hoopTarget)
+  if (distance > 50) {
+    const penalty = (distance - 50) * 0.5
+    chance -= penalty
+    factors.push({ name: "distance", value: -penalty })
+  }
+
+  // Defender penalty
+  const defenders = players.filter(p => {
+    if (p.id === shooter.id) return false
+    if (p.components.team.data.team === shooter.components.team.data.team) return false
+    
+    const dist = XYdistance(p.components.position.data, shooterPos)
+    return dist < DEFENDER_RANGE
+  })
+
+  const defenderPenalty = defenders.length * 15
+  chance -= defenderPenalty
+  if (defenderPenalty > 0) {
+    factors.push({ name: "defenders", value: -defenderPenalty })
+  }
+
+  // Movement penalty
+  const speed = shooter.components.position.getSpeed()
+  if (speed > 0.5) {
+    const movePenalty = speed * 10
+    chance -= movePenalty
+    factors.push({ name: "movement", value: -movePenalty })
+  }
+
+  // Clamp to 0-100
+  chance = Math.max(0, Math.min(100, chance))
+
+  return { total: chance, factors }
+}
+```
+
+### Shooting Action
+
+Location: `core/src/games/hoops/Howard.ts:199`
+
+```typescript
+const shootBall = Action("shoot", ({ entity, world }) => {
+  if (!entity) return
+
+  const state = world.state<HoopsState>()
+  if (state.phase !== "play") return
+  if (state.ballOwner !== entity.id) return
+
+  const ball = world.entity<Position>("ball")
+  const ballPos = ball?.components.position
+  if (!ballPos) return
+
+  const shooterTeam = entity.components.team?.data.team
+  if (!shooterTeam) return
+
+  state.shotTick = world.tick
+  state.shotPlayer = entity.id
+
+  // Determine shot value (2 or 3 points)
+  const shooterPos = entity.components.position?.data
+  if (shooterPos) {
+    state.lastShotValue = isThreePointShot(shooterPos) ? 3 : 2
+  }
+
+  // Team 1 shoots at right hoop, Team 2 at left hoop
+  const hoopTarget = shooterTeam === 1 ? HOOP_TARGET_RIGHT : HOOP_TARGET_LEFT
+
+  // Make or miss based on shot chance
+  const isMake = world.random.next() * 100 <= state.shotChance
+  const missAngle = world.random.next() * PI * 2
+  const missRadius = SHOT_MISS_OFFSET_MIN + world.random.next() * (SHOT_MISS_OFFSET_MAX - SHOT_MISS_OFFSET_MIN)
+  const target = isMake ? hoopTarget : {
+    x: hoopTarget.x + cos(missAngle) * missRadius,
+    y: hoopTarget.y + sin(missAngle) * missRadius,
+    z: hoopTarget.z
+  }
+
+  // Calculate trajectory
+  const dx = target.x - ballPos.data.x
+  const dy = target.y - ballPos.data.y
+  const distance = hypot(dx, dy)
+  const distanceCharge = min(1, distance / SHOT_UP_SCALE)
+  let up = SHOT_UP_MIN + (SHOT_UP_MAX - SHOT_UP_MIN) * distanceCharge
+  const originZ = max(1.5, ballPos.data.z)
+
+  // Physics calculation for parabolic arc
+  const a = -0.5 * SHOT_GRAVITY
+  const b = up + 0.5 * SHOT_GRAVITY
+  const c = originZ - target.z
+  const discriminant = b * b - 4 * a * c
+  if (discriminant <= 0) return
+
+  const sqrt = Math.sqrt(discriminant)
+  const t1 = (-b - sqrt) / (2 * a)
+  const t2 = (-b + sqrt) / (2 * a)
+  const ticksToHoop = max(t1, t2)
+  
+  const timeSeconds = ticksToHoop * (world.tickrate / 1000)
+  const velX = dx / timeSeconds
+  const velY = dy / timeSeconds
+
+  // Release ball
+  state.ballOwner = ""
+  state.ballOwnerTeam = 0
+  state.dribbleLocked = false
+
+  ballPos.data.follows = null
+  ballPos.setPosition({ z: originZ })
+  ballPos.setGravity(SHOT_GRAVITY)
+  ballPos.setVelocity({ x: velX, y: velY, z: up })
+})
+```
+
+### Constants
+
+Location: `core/src/games/hoops/HoopsConstants.ts`
+
+```typescript
+export const HOWARD_SPEED = 135
+export const HOWARD_ACCEL = 80
+
+export const BALL_ORBIT_DISTANCE = 12
+export const BALL_PICKUP_RANGE = 8
+export const BALL_PICKUP_Z = 1
+export const BALL_PICKUP_COOLDOWN_TICKS = 20
+
+export const DRIBBLE_GRAVITY = 0.15
+export const DRIBBLE_BOUNCE = 2.5
+
+export const SHOT_GRAVITY = 0.12
+export const SHOT_CHARGE_Z = 3.5
+export const SHOT_UP_MIN = 4
+export const SHOT_UP_MAX = 8
+export const SHOT_UP_SCALE = 200
+export const SHOT_MISS_OFFSET_MIN = 5
+export const SHOT_MISS_OFFSET_MAX = 15
+
+export const PASS_SPEED = 300
+export const PASS_UP = 2
+export const PASS_GRAVITY = 0.2
+
+export const SCORE_RESET_TICKS = 80
+
+export const COURT_WIDTH = 450
+export const COURT_HEIGHT = 200
+export const COURT_SPLAY = 20
+export const COURT_CENTER = { x: COURT_WIDTH / 2, y: 0 }
+
+export const HOOP_TARGET_LEFT = { x: -26, y: 0, z: 36 }
+export const HOOP_TARGET_RIGHT = { x: COURT_WIDTH + 26, y: 0, z: 36 }
+```
+
+## Controls
+
+Location: `core/src/games/hoops/Hoops.ts:394`
+
+```typescript
+const controls: HUDSystemProps = {
+  direction: "row",
+  clusters: [
+    {
+      label: "move",
+      buttons: [["A", "S", "D"], ["W"]]
+    },
+    {
+      label: "jump",
+      buttons: [["spacebar"]]
+    },
+    {
+      label: "shoot",
+      buttons: [["mb1"]]
+    },
+    {
+      label: "pass",
+      buttons: [["mb2"]]
+    },
+    {
+      label: "menu",
+      buttons: [["esc"]]
+    }
+  ]
+}
+```
+
+## Key Features
+
+### Skill-Based Shooting
+
+- Distance affects accuracy
+- Defenders reduce chance
+- Movement penalties
+- Strategic positioning
+
+### Dribbling
+
+- Automatic bounce when standing
+- Gravity-based physics
+- Speed affects bounce rate
+- Movement locked after jump
+
+### Rollback Netcode
+
+- Competitive gameplay
+- Low-latency shooting
+- Precise collision
+- Fair hit detection
+
+### Team Dynamics
+
+- 2v2 gameplay
+- Pass mechanics
+- Offensive/defensive strategy
+- Team scoring
+
+## Related Files
+
+- `Howard.ts` - Player character
+- `HoopsShot.ts` - Shot chance calculation
+- `HoopsConstants.ts` - Game parameters
+- `HoopsEntities.ts` - Ball, court, hoops
+- `MobileUI.ts` - Touch controls
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Volley" href="/games/volley">
+    Similar 2v2 sports game
+  </Card>
+  <Card title="Legends" href="/games/legends">
+    Another competitive multiplayer game
+  </Card>
+</CardGroup>

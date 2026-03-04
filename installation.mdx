@@ -1,0 +1,377 @@
+---
+title: Installation
+description: Set up your Piggo Games development environment
+---
+
+## Prerequisites
+
+Before installing Piggo, make sure you have:
+
+<CardGroup cols={2}>
+  <Card title="Bun" icon="box">
+    **Version 1.2+** required
+    
+    Piggo uses Bun as its package manager and runtime.
+  </Card>
+  <Card title="PostgreSQL" icon="database">
+    **Version 14+** recommended
+    
+    Required for the game server's database.
+  </Card>
+</CardGroup>
+
+### Install Bun
+
+If you don't have Bun installed:
+
+<CodeGroup>
+```bash macOS/Linux
+curl -fsSL https://bun.sh/install | bash
+```
+
+```bash Windows
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+```bash npm (alternative)
+npm install -g bun
+```
+</CodeGroup>
+
+Verify installation:
+
+```bash
+bun --version
+# Should output 1.2.0 or higher
+```
+
+### Install PostgreSQL
+
+<CodeGroup>
+```bash macOS (Homebrew)
+brew install postgresql@16
+brew services start postgresql@16
+```
+
+```bash Ubuntu/Debian
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo systemctl start postgresql
+```
+
+```bash Windows
+# Download from https://www.postgresql.org/download/windows/
+# Or use Docker:
+docker run --name piggo-postgres -e POSTGRES_PASSWORD=postgres -p 5432:5432 -d postgres:16
+```
+</CodeGroup>
+
+Create the development database:
+
+```bash
+creatdb piggo
+```
+
+## Clone and Install
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/your-org/piggo-gg.git
+    cd piggo-gg
+    ```
+  </Step>
+
+  <Step title="Install Dependencies">
+    Piggo uses a monorepo structure with Bun workspaces. Install all dependencies:
+
+    ```bash
+    bun install
+    ```
+
+    This installs dependencies for all packages:
+    - `core` - ECS engine and game logic
+    - `web` - Browser client
+    - `server` - Game server and API
+    - `electron` - Desktop app wrapper
+  </Step>
+
+  <Step title="Set Up Database">
+    Generate Prisma client and run migrations:
+
+    ```bash
+    bun gen
+    bun db
+    ```
+
+    These commands:
+    - `bun gen` - Generates Prisma client from schema
+    - `bun db` - Runs database migrations
+  </Step>
+
+  <Step title="Start Development Server">
+    Launch both the web client and game server:
+
+    ```bash
+    bun dev
+    ```
+
+    This starts:
+    - **Web client** at `http://localhost:3000`
+    - **Game server** with WebSocket on the configured port
+
+    <Note>
+      The dev command runs both services in parallel. Press `Ctrl+C` to stop both.
+    </Note>
+  </Step>
+</Steps>
+
+## Monorepo Structure
+
+Piggo is organized as a Bun workspace:
+
+```
+piggo-gg/
+├── core/              # ECS engine & game logic
+│   ├── src/
+│   │   ├── ecs/      # Components, systems, entities
+│   │   ├── games/    # Game implementations
+│   │   ├── graphics/ # Three.js & Pixi renderers
+│   │   ├── net/      # Network synchronization
+│   │   ├── runtime/  # World, game loop
+│   │   └── sound/    # Audio system
+│   ├── main.ts       # Package exports
+│   └── package.json
+├── web/               # Browser client
+│   ├── src/
+│   │   ├── PiggoGG.ts    # Client initializer
+│   │   └── index.ts      # Entry point
+│   ├── res/          # Static assets (SVG, audio)
+│   └── package.json
+├── server/            # Game server
+│   ├── src/
+│   │   ├── Api.ts        # HTTP & WebSocket API
+│   │   ├── ServerWorld.ts # Server-side world
+│   │   └── db/           # Prisma schema & migrations
+│   └── package.json
+├── electron/          # Desktop wrapper
+│   └── src/main.ts
+├── docs/              # GitHub Pages bundle
+├── package.json       # Workspace root
+└── tsconfig.json      # Shared TypeScript config
+```
+
+## Dependencies
+
+### Core Package
+
+The `@piggo-gg/core` package includes:
+
+| Dependency | Version | Purpose |
+|------------|---------|----------|
+| `three` | 0.183.0 | 3D graphics rendering |
+| `pixi.js` | 8.10.2 | 2D graphics rendering |
+| `@dimforge/rapier2d-compat` | 0.13.1 | 2D physics engine |
+| `@dimforge/rapier3d-compat` | 0.19.3 | 3D physics engine |
+| `tone` | 15.0.4 | Audio synthesis and effects |
+| `@msgpack/msgpack` | 3.1.1 | Binary serialization |
+| `simplex-noise` | 4.0.3 | Procedural noise generation |
+
+### Server Package
+
+The `@piggo-gg/server` package includes:
+
+| Dependency | Version | Purpose |
+|------------|---------|----------|
+| `@prisma/client` | 6.16.0 | Database ORM |
+| `prisma` | 6.16.0 | Database toolkit |
+| `jsonwebtoken` | 9.0.2 | JWT authentication |
+| `google-auth-library` | 9.15.1 | OAuth integration |
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the `server` directory:
+
+```bash server/.env
+DATABASE_URL="postgresql://postgres@localhost:5432/piggo"
+JWT_SECRET="your-secret-key-here"
+PORT=3001
+```
+
+### TypeScript Configuration
+
+Piggo uses strict TypeScript settings defined in the root `tsconfig.json`:
+
+```json tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "paths": {
+      "@piggo-gg/core": ["./core/main.ts"]
+    }
+  }
+}
+```
+
+<Note>
+  Piggo enforces strict null checks and explicit types. Avoid using `any` when possible.
+</Note>
+
+## Available Scripts
+
+From the root directory:
+
+| Command | Description |
+|---------|-------------|
+| `bun dev` | Start web client and server in dev mode |
+| `bun dev-https` | Start with HTTPS (for testing OAuth) |
+| `bun tests` | Run all tests |
+| `bun gen` | Generate Prisma client |
+| `bun db` | Run database migrations |
+| `bun pages` | Build static GitHub Pages bundle |
+
+### Package-Specific Scripts
+
+<CodeGroup>
+```bash Core
+cd core
+bun test
+```
+
+```bash Web
+cd web
+bun dev          # Start dev server
+bun dev-compile  # Compile to res/
+```
+
+```bash Server
+cd server
+bun dev              # Start with hot reload
+bun start            # Production mode
+bun prisma:generate  # Generate Prisma client
+bun prisma:local     # Run migrations locally
+```
+</CodeGroup>
+
+## Verify Installation
+
+Test that everything is working:
+
+<Steps>
+  <Step title="Check Database Connection">
+    ```bash
+    cd server
+    bun x prisma db pull --schema=src/db/schema.prisma
+    ```
+    Should connect without errors.
+  </Step>
+
+  <Step title="Run Tests">
+    ```bash
+    bun tests
+    ```
+    All tests should pass.
+  </Step>
+
+  <Step title="Access the Web Client">
+    With `bun dev` running, open `http://localhost:3000` in your browser.
+    
+    You should see the Piggo lobby.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Bun command not found">
+    Make sure Bun is installed and in your PATH:
+    
+    ```bash
+    echo $PATH | grep .bun
+    ```
+    
+    If not found, add to your shell profile:
+    
+    ```bash
+    export PATH="$HOME/.bun/bin:$PATH"
+    ```
+  </Accordion>
+
+  <Accordion title="PostgreSQL connection failed">
+    Ensure PostgreSQL is running:
+    
+    ```bash
+    # macOS
+    brew services list
+    
+    # Linux
+    sudo systemctl status postgresql
+    ```
+    
+    Check your DATABASE_URL in `server/.env` matches your PostgreSQL setup.
+  </Accordion>
+
+  <Accordion title="Port already in use">
+    If port 3000 or 3001 is occupied:
+    
+    ```bash
+    # Find process using port
+    lsof -i :3000
+    
+    # Kill process
+    kill -9 <PID>
+    ```
+  </Accordion>
+
+  <Accordion title="TypeScript errors in IDE">
+    Generate Prisma client:
+    
+    ```bash
+    bun gen
+    ```
+    
+    Restart your TypeScript server in VS Code: `Cmd+Shift+P` > "TypeScript: Restart TS Server"
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Quickstart Guide"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Build your first game in 5 minutes
+  </Card>
+  <Card
+    title="Architecture"
+    icon="folder-tree"
+    href="/concepts/architecture"
+  >
+    Understand the codebase organization
+  </Card>
+  <Card
+    title="Creating Games"
+    icon="code"
+    href="/building/creating-games"
+  >
+    Learn how to build your own games
+  </Card>
+  <Card
+    title="ECS Architecture"
+    icon="cubes"
+    href="/concepts/ecs"
+  >
+    Master the Entity Component System
+  </Card>
+</CardGroup>
